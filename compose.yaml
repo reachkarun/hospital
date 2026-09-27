@@ -1,0 +1,53 @@
+services:
+  api:
+    build: .
+    environment: &environment
+      DEMO_MODE: "true"
+      HOST: 0.0.0.0
+      DATABASE_PATH: /app/data/rounding.db
+      BILLING_URL: http://billing-mock:4001/api/v1
+      BILLING_TOKEN: demo-billing-secret
+    ports:
+      - "127.0.0.1:${API_HOST_PORT:-3002}:3000"
+    volumes:
+      - rounding-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    depends_on:
+      billing-mock:
+        condition: service_healthy
+    restart: unless-stopped
+  worker:
+    build: .
+    command: ["node", "dist/src/worker-main.js"]
+    environment: *environment
+    volumes:
+      - rounding-data:/app/data
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+  billing-mock:
+    build: .
+    command: ["node", "dist/src/mock-main.js"]
+    environment:
+      DEMO_MODE: "true"
+      HOST: 0.0.0.0
+      MOCK_DATABASE_PATH: /app/data/billing.db
+      BILLING_TOKEN: demo-billing-secret
+    ports:
+      - "127.0.0.1:4001:4001"
+    volumes:
+      - billing-data:/app/data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4001/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    restart: unless-stopped
+volumes:
+  rounding-data:
+  billing-data:

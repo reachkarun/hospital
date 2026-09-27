@@ -1,0 +1,55 @@
+@api = http://127.0.0.1:3000
+@provider = demo-provider-one
+
+### Read assigned patients
+GET {{api}}/v1/patients
+Authorization: Bearer {{provider}}
+
+### Read encounter and clinical data
+GET {{api}}/v1/visits/VISIT-001
+Authorization: Bearer {{provider}}
+
+### Save a draft (repeat safely with the same operation ID)
+POST {{api}}/v1/charges
+Authorization: Bearer {{provider}}
+Content-Type: application/json
+
+{
+  "operationId": "example-save-1",
+  "chargeId": "example-charge-1",
+  "expectedVersion": 0,
+  "charge": {
+    "visitId": "VISIT-001",
+    "serviceCode": "99213",
+    "quantity": 1,
+    "dateOfService": "2026-01-15",
+    "modifiers": ["25"],
+    "notes": "Synthetic encounter note"
+  }
+}
+
+### Queue the draft for billing
+POST {{api}}/v1/submissions
+Authorization: Bearer {{provider}}
+Content-Type: application/json
+
+{"clientSubmissionId":"example-submit-1","chargeIds":["example-charge-1"]}
+
+### Inspect charge outcome
+GET {{api}}/v1/charges/example-charge-1
+Authorization: Bearer {{provider}}
+
+### Hospital audit
+GET {{api}}/v1/admin/audit?limit=100
+Authorization: Bearer demo-admin-one
+
+### Hospital queue state
+GET {{api}}/v1/admin/metrics
+Authorization: Bearer demo-admin-one
+
+### Simulate the next two billing requests failing
+POST http://127.0.0.1:4001/admin/mode
+Authorization: Bearer demo-billing-secret
+Content-Type: application/json
+
+{"hospitalId":"HOSP-001","mode":"outage","remaining":2}
