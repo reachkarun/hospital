@@ -4,7 +4,7 @@
 
 `POST /v1/integrations/patient-events`, with a hospital-specific **integration** bearer credential, is the mock broker's delivery adapter. `scripts/demo.ts` is a runnable source publisher. The transport-independent `consume(store, hospital, input)` function is the production consumer seam; an AMQP client can invoke it and ACK only after it returns. The hospital comes from the authenticated connection, and must equal `hospitalId` in the envelope.
 
-The executable schema is [`envelope`](../src/contracts.ts) plus the event-specific [`payloads`](../src/patients.ts) validators. The envelope follows the assignment:
+Gateway routes source events to Patient service. The executable schema is [`envelope`](../packages/contracts/src/index.ts) plus the event-specific [`payloads`](../services/patient-service/src/patients.ts) validators. Patient owns its inbox, projections, clocks and audit in a private database. The envelope follows the assignment:
 
 ```json
 {
@@ -83,7 +83,7 @@ The assignment did not define admission/unassignment payloads; the schemas above
 
 Waiting events are retried after successful consumption, periodically by the worker, and through an admin replay endpoint, with a maximum of 100 per hospital per pass. Persistent missing prerequisites need an operator to restore source data. Quarantined records are visible in the admin inbox; send a corrected event with a **new message ID**. They are never silently discarded or force-applied. Malformed envelopes cannot enter the validated inbox; a real broker adapter must dead-letter them using its delivery metadata.
 
-Inbox receipts have no TTL in this implementation, so ancient duplicate messages cannot accidentally reapply after deduplication expiry. Define an archival/tombstone policy before managing long-term PHI retention. HTTP limits are 1 MiB, 120 requests/minute per credential; brokers must honor 429 `Retry-After` as well as 503.
+Inbox receipts have no TTL in this implementation, so ancient duplicate messages cannot accidentally reapply after deduplication expiry. Define an archival/tombstone policy before managing long-term PHI retention. HTTP limits are 1 MiB, 240 requests/minute per credential per process; brokers must honor 429 `Retry-After` as well as 503.
 
 ## Ordering and competing consumers
 

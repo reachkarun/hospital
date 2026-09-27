@@ -1,5 +1,5 @@
 {
-  "name": "rounding-backend",
+  "name": "rounding-microservices",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -7,26 +7,22 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "tsx watch src/server.ts",
-    "demo:start": "tsx scripts/start-demo.ts",
-    "build": "tsc",
-    "start": "node dist/src/server.js",
-    "worker": "tsx src/worker-main.ts",
-    "mock": "tsx src/mock-main.ts",
+    "build:shared": "npm run build -w @rounding/contracts && npm run build -w @rounding/platform",
+    "build": "npm run build:shared && npm run build -w @rounding/billing-mock -w @rounding/billing-service -w @rounding/charge-service -w @rounding/patient-service -w @rounding/gateway && tsc",
+    "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present && tsc --noEmit",
+    "test": "npm run build && tsx --test tests/*.test.ts",
+    "demo:start": "npm run build && tsx scripts/start-demo.ts",
     "demo": "tsx scripts/demo.ts",
-    "test": "tsx --test tests/*.test.ts",
-    "typecheck": "tsc --noEmit"
-  },
-  "dependencies": {
-    "@fastify/swagger": "9.9.0",
-    "@fastify/swagger-ui": "6.1.1",
-    "fastify": "5.12.5",
-    "zod": "3.25.76",
-    "zod-to-json-schema": "3.25.2"
+    "docker:up": "docker compose up --build -d",
+    "docker:down": "docker compose down"
   },
   "devDependencies": {
     "@types/node": "22.18.6",
     "tsx": "4.20.5",
     "typescript": "5.9.2"
-  }
+  },
+  "workspaces": [
+    "packages/*",
+    "services/*"
+  ]
 }

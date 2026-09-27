@@ -1,164 +1,157 @@
-# Architecture and decisions
+# Microservice architecture
 
-## System boundaries
+The backend is split by business ownership into independently deployed Gateway, Patient, Charge, and Billing services, with a separate external Billing mock. They use private databases, versioned HTTP contracts, and durable handoff records. Deploying one domain service does not require restarting the others.
 
-The application is a modular monolith with a separately running delivery worker. Patient and charge transactions share one database; external billing calls never hold database locks. This avoids a distributed transaction while allowing the API to keep accepting work during billing outages.
+## Service diagram
 
 ```mermaid
 flowchart TB
-    EHR[Hospital EHR and scheduling systems] --> Broker[External enterprise broker\none authenticated connection per hospital]
-    Mobile[Provider mobile app\noffline operation IDs and versions] -->|HTTPS REST| API
-    Broker -->|at-least-once normalized messages| Adapter
-    subgraph Application[Node.js backend - tenant scope derived from credentials]
-        API[Fastify API\nauthentication and limits] --> Charges[Charges and offline coordinator]
-        Adapter[Delivery adapter\nHTTP broker mock] --> Patients[Patient sync consumer]
-        Patients -->|atomic inbox + projections + audit| DB[(SQLite WAL\nhospital-scoped keys)]
-        Charges -->|atomic charge locks + outbox + audit| DB
-        DB -->|lease pending submissions| Worker[Billing worker\nbackoff and reconciliation]
-        Worker -->|acknowledgments + item states + audit| DB
-        API -->|scoped reads| DB
+    Mobile[Mobile client / Swagger] -->|Bearer-authenticated REST| Gateway
+    Broker[Hospital enterprise broker mock] -->|Normalized source events| Gateway
+    subgraph Edge[Gateway project - stateless]
+      Gateway[Routing / authentication / aggregate OpenAPI]
     end
-    Worker -->|REST POST stable idempotency key\nGET submission status| Billing[External billing instance per hospital]
-    Billing -->|synchronous per-item acknowledgment| Worker
+    subgraph Patient[Patient service project]
+      PAPI[Patient API / inbox consumer / replay loop]
+      PDB[(Private patient DB\nentities / clocks / inbox / audit)]
+      PAPI --> PDB
+    end
+    subgraph Charge[Charge service project]
+      CAPI[Drafts / offline sync / submission API]
+      CDB[(Private charge DB\ncharges / revisions / operations / outbox / audit)]
+      Dispatcher[Leased HTTP dispatcher / result projection]
+      CAPI -->|Local transaction| CDB
+      CDB --> Dispatcher
+      Dispatcher -->|Local result transaction| CDB
+    end
+    subgraph Billing[Billing service project]
+      BAPI[Internal durable job API]
+      BDB[(Private billing DB\njobs / retry receipts / audit)]
+      Worker[Leased external billing worker]
+      BAPI --> BDB
+      BDB --> Worker
+      Worker -->|Validated acknowledgment| BDB
+    end
+    Gateway -->|Patient and broker routes| PAPI
+    Gateway -->|Charge / sync / submission routes| CAPI
+    Gateway -->|Admin audit and metrics| BAPI
+    CAPI -->|Authenticated encounter lookup| PAPI
+    Dispatcher -->|Idempotent PUT job / retry command| BAPI
+    BAPI -->|Current durable job state| Dispatcher
+    Worker -->|Stable-key POST / status GET| External[Hospital billing REST API\nseparate mock project for demo]
 ```
 
-For the demonstration, `scripts/demo.ts` replaces the broker and `src/mock-billing.ts` replaces billing. Both use the actual HTTP boundaries. The billing mock has its own persistent database and failure controls.
+No service mounts another service's volume or queries its tables. Shared `packages/contracts` contains wire types, runtime validators and demo example data. `packages/platform` contains generic SQL transaction, HTTP authentication/error and process-lifecycle helpers. It has no patient or charge tables. Each service declares its dependencies and builds to its own `dist/`; runtime images contain that project's domain code and the shared packages, not other services' domain code.
 
-## Module organization
-
-`api.ts` owns transport/security; it delegates business decisions to `patients.ts` and `charges.ts`. `contracts.ts` defines validated mobile input and common error semantics. `billing.ts` has an injectable transport, separating retry state transitions from HTTP. `db.ts` owns transactions/schema. `config.ts`, process entrypoints, and `seed.ts` are composition infrastructure.
-
-These boundaries keep the take-home small while enabling extraction: patient consumption can move to a broker process, and billing workers already run separately. There is no repository interface per table or internal message bus: neither is needed to understand the current transactions. SQL is parameterized and tenant scope is explicit at every business read/write boundary.
-
-## Data model
+## Data ownership and logical ER model
 
 ```mermaid
 erDiagram
-    HOSPITAL ||--o{ PATIENT : scopes
-    HOSPITAL ||--o{ PROVIDER : scopes
     PATIENT ||--o{ VISIT : has
-    VISIT ||--o{ ASSIGNMENT : has
     PROVIDER ||--o{ ASSIGNMENT : receives
-    VISIT ||--o{ CHARGE : contains
-    PROVIDER ||--o{ CHARGE : authors
-    CHARGE ||--|{ CHARGE_REVISION : retains
-    SUBMISSION ||--|{ CHARGE : delivers
-    HOSPITAL ||--o{ INBOX : deduplicates
-    HOSPITAL ||--o{ FIELD_CLOCK : orders
-    PROVIDER ||--o{ OPERATION : retries
-    HOSPITAL ||--o{ AUDIT : records
-    HOSPITAL {
-        string id PK
-        string billing_url
-    }
+    VISIT ||--o{ ASSIGNMENT : has
+    VISIT ||--o{ CHARGE : "external visit ID only"
+    CHARGE ||--|{ REVISION : retains
+    SUBMISSION ||--|{ CHARGE : locks
+    SUBMISSION ||--o| BILLING_JOB : "HTTP contract / same ID"
+    BILLING_JOB ||--o{ RETRY_RECEIPT : deduplicates
     PATIENT {
-        string hospital_id PK
-        string patient_id PK
-        string mrn
-        json demographics
-        json allergies_conditions_medications
-    }
-    PROVIDER {
-        string hospital_id PK
-        string provider_id PK
-        string npi
+      string hospital_id PK
+      string patient_id PK
+      json demographics_and_clinical_data
     }
     VISIT {
-        string hospital_id PK
-        string visit_id PK
-        string patient_id
-        datetime admission_date
-        datetime discharge_date
-        json location
+      string hospital_id PK
+      string visit_id PK
+      string patient_id
+      datetime admission_and_discharge
+      json location
+    }
+    PROVIDER {
+      string hospital_id PK
+      string provider_id PK
+      string npi
     }
     ASSIGNMENT {
-        string hospital_id PK
-        string assignment_id PK
-        string provider_id
-        string visit_id
-        boolean active
+      string hospital_id PK
+      string assignment_id PK
+      string provider_id
+      string visit_id
+      boolean active
     }
     CHARGE {
-        string hospital_id PK
-        string charge_id PK
-        string provider_id
-        string visit_id
-        json service_quantity_date_modifiers_notes
-        int version
-        string status
-        string submission_id
+      string hospital_id PK
+      string charge_id PK
+      string provider_id
+      string visit_id
+      json service_quantity_date_modifiers_notes
+      int version
+      string status
     }
-    CHARGE_REVISION {
-        string hospital_id PK
-        string charge_id PK
-        int version PK
-        json snapshot
+    REVISION {
+      string hospital_id PK
+      string charge_id PK
+      int version PK
+      json immutable_snapshot
     }
     SUBMISSION {
-        string hospital_id PK
-        string submission_id PK
-        string provider_id
-        string client_key UK
-        json immutable_payload
-        json acknowledgment
-        string status
-        datetime lease_until
-        int attempts
+      string hospital_id PK
+      string submission_id PK
+      string mobile_key
+      json immutable_billing_payload
+      string projected_status
+      datetime dispatch_lease
+      string retry_command_id
     }
-    INBOX {
-        string hospital_id PK
-        string message_id PK
-        string digest
-        json envelope
-        string status
+    BILLING_JOB {
+      string hospital_id PK
+      string submission_id PK
+      string external_idempotency_key
+      json immutable_payload
+      datetime first_attempt
+      datetime worker_lease
+      json acknowledgment
+      string status
     }
-    FIELD_CLOCK {
-        string hospital_id PK
-        string entity_kind PK
-        string entity_id PK
-        string field PK
-        string source_timestamp_and_message_id
-    }
-    OPERATION {
-        string hospital_id PK
-        string provider_id PK
-        string operation_id PK
-        string digest
-        json original_response
-    }
-    AUDIT {
-        int sequence PK
-        string hospital_id
-        string actor
-        string action
-        string resource
-        datetime at
+    RETRY_RECEIPT {
+      string hospital_id PK
+      string submission_id PK
+      string operation_id PK
     }
 ```
 
-This diagram shows the logical model. Physically, source-owned patient/provider/visit/assignment projections share `entities(hospital, kind, id, body)`. Validated JSON preserves changing external clinical fields without a large EHR schema. Application transactions check cross-entity links; hospital references and composite identities are enforced by SQLite. A larger production implementation should normalize frequently queried relationships and add composite foreign keys and indexes. Submission ownership is unique on **(hospital, provider, mobile key)**, not the single-column shorthand in the diagram. Draft charges do not yet have a submission; corrected rejected charges point to a newer submission while immutable revisions retain prior links.
+Patient entities, visits, providers and assignments are validated JSON projections in Patient's `entities` table. Patient also owns `inbox` and `field_clocks`. Charge owns `operations`, `charges`, `charge_revisions`, and `submissions` (its outbox and local result projection). Billing owns a separate `submissions` table (durable external jobs) and `retry_receipts`. Same table names in separate databases do not imply shared state. Cross-service ER links are external identifiers, never cross-database foreign keys. Every domain record is scoped by hospital.
 
-Clinical notes belong to each charge and are versioned with it. Every charge insert/update creates an immutable `charge_revisions` snapshot using database triggers. The audit table records actor/action/resource/time for changes and PHI reads; source inbox messages retain event history. Billing payloads and acknowledgments retain the reference and item outcomes. No application logs contain clinical content. Audit and revision triggers block SQL UPDATE/DELETE through normal application access; they do not prevent a privileged database administrator from tampering. Production needs separate append-only archival storage and access controls.
+Each service stores its own hospital configuration and append-only audit. Billing alone uses its hospital billing URL to contact external systems. Charge stores only the encounter/billing fields needed in the immutable request; it does not replicate patient clinical records. Audit/revision triggers prevent ordinary UPDATE/DELETE, but privileged database administrators still require independent oversight and archival controls.
 
-## State and transaction invariants
+## Transaction and failure boundaries
 
-1. Patient inbox receipt, projection changes, field clocks, and audit commit together. Unexpected errors roll back; acknowledgment happens only after the commit. Invalid version/payload records persist in quarantine without changing projections.
-2. Saving a draft uses a stable operation ID plus a payload digest. Exact retries return the original save result. A changed payload under the same ID returns 409. Compare-and-swap versions reject stale edits; they never silently overwrite clinical notes.
-3. Submitting charges validates all rows, persists an immutable billing request, locks all charge rows, and audits them in a single transaction. No external call happens before commit. The submission row doubles as the durable outbox.
-4. Mobile retry keys are permanent local receipts. Billing keys are server-generated submission UUIDs, scoped by hospital at the receiver. Transport retries reuse that key; a corrected rejected item uses a new logical submission.
-5. Workers atomically claim due jobs with a 60-second lease and random fencing token. Only the current token may commit a result. Network calls have a five-second timeout. If a worker crashes, another reclaims and reconciles the same immutable request. Billing idempotency, rather than the lease alone, prevents duplicate external effects.
-6. A terminal acknowledgment must account for every requested charge exactly once, match the submission ID and aggregate status, and supply a billing reference for accepted items. Otherwise it is uncertain and retried/reconciled. Partial acceptance is one atomic local update.
+### Patient ingestion
 
-## Technology rationale and scalability
+Envelope identity, projections, clocks and audit commit in Patient's transaction. Schema failures quarantine without modifying clinical state. Dependency gaps wait durably; an independent Patient replay loop revisits them. Timestamp/field ordering and unassignment tombstones preserve the prior behavior. Strict global source order still requires a broker sequence/watermark contract.
 
-Node.js/TypeScript fits the requested stack, with Fastify for HTTP and Zod for runtime contracts. Node 22's built-in SQLite removes native add-on installation and makes a single-machine demonstration portable. WAL permits concurrent readers, while `BEGIN IMMEDIATE` serializes write decisions before checking keys/versions. See the [Node SQLite API](https://nodejs.org/download/release/latest-jod/docs/api/sqlite.html) and [SQLite transaction documentation](https://www.sqlite.org/lang_transaction.html).
+### Charge validation and offline edits
 
-SQLite writes and `DatabaseSync` calls block their process. This is a deliberate single-host trade-off, not a horizontally scalable storage claim. Short transactions, 1 MiB request limits, batches of at most 100, 120 requests/minute per configured token, and pagination bound the demo's work. Two independent tenants are seeded with identical external entity IDs to exercise isolation.
+Charge authenticates the provider locally and requests a minimal encounter context from `POST /internal/v1/encounters/resolve`. Patient validates current/historical assignment and returns hospital/provider/visit IDs, MRN/NPI and stay dates. Charge verifies the response identity and service dates, then performs its own version/key checks and transaction. No network call holds a database lock.
 
-At larger scale, move to PostgreSQL: normalize relationships, enforce row-level security, use row-level compare-and-swap/unique constraints and `FOR UPDATE SKIP LOCKED` for workers, and add indexed sync cursors. Replace per-process rate limits with shared quotas, partition broker consumption by hospital/patient, add fair per-hospital worker scheduling/circuit breakers, central metrics, and managed secrets. No distributed queue is needed for billing until the database outbox becomes a measured bottleneck.
+This is point-in-time validation, not a distributed serializable transaction. A discharge/assignment change can arrive immediately after the lookup. New submissions re-resolve the encounter; already queued immutable requests are not rewritten. Historical assignments are intentionally allowed for post-discharge billing. A stricter hospital policy would need source version tokens/reservations or a compensation workflow. Patient outages fail new edits safely; known operation and submission receipts are returned without a new lookup.
 
-## Security assumptions
+### Charge-to-Billing handoff
 
-Demo bearer credentials model authenticated hospital membership; a provider cannot select another hospital in the request. Roles separate source writes, provider charge actions, and operational audit access. Providers see assigned patient lists and may access previously assigned visits to finish post-discharge billing. Historical access is deliberate; a real hospital may require a narrower time-limited entitlement policy.
+Charge atomically locks the selected drafts, increments versions, stores the immutable payload and mobile receipt, and audits the action. A separate loop leases its own outbox row for 30 seconds and PUTs the same job to Billing. Billing validates the versioned contract and stores it before replying. Identical repeated requests return current state; changed payloads under the same job ID conflict. A timeout after commit leaves the outbox eligible for the same-key retry.
 
-For deployment beyond synthetic data: terminate TLS, authenticate brokers with per-hospital mTLS/OAuth, replace static tokens with short-lived identity tokens, encrypt database files/backups, use separate runtime/migration roles, define legal retention and access-review policies, and protect the mock from public exposure. TLS and storage encryption are deployment responsibilities not implemented by this local app. PHI exists in the database, revision history, inbox and outbox. This architecture alone does not establish regulatory compliance.
+Billing runs its own 60-second leased external worker. It can finish while Charge is down. The Charge dispatcher continues retrieving current state through idempotent PUT responses, validates IDs/digest/item acknowledgment, and atomically updates local item states. Fencing tokens prevent stale dispatchers overwriting newer results. This is eventual consistency: mobile clients may briefly see QUEUED after Billing has committed ACCEPTED. They must poll the returned submission ID.
+
+Manual retry is another durable command with its own operation ID. Billing receipts deduplicate that command without resetting a live worker lease, billing key, original payload, attempt count, or first-attempt timestamp. The local command is removed only after its response is processed; a lost response safely replays the command.
+
+### External billing uncertainty
+
+The original external contract still grants only 24 hours of deduplication. Billing uses the same external key for transport retries, queries prior status first, and stops blind POSTs after 23 hours. A complete valid acknowledgment can finalize after expiry; a 404 or summary-only response cannot justify another POST then. Items stay locked in REVIEW until authoritative reconciliation is possible. Partial acceptance updates only corresponding items; a new batch contains only corrected rejected drafts. Neither service restarts, handoff retries nor migration resets the time window.
+
+## Deployment, authentication and scaling
+
+Gateway exposes port 3002 and Swagger; only the mock additionally exposes port 4001 for demo controls. Patient, Charge and Billing have private Docker-network ports and distinct named volumes. All services independently validate external bearer credentials. Internal Patient and Billing APIs require distinct service tokens; Gateway has no internal API route. In production replace demo static tokens with workload identity/mTLS and short-lived user tokens, encrypt PHI storage/backups and terminate TLS.
+
+Separate projects allow independent deployment/storage migrations, ownership and failure isolation. They introduce network latency, partial failure, eventual consistency, service authentication, multiple audit cursors and operational overhead. This split is intentionally requested; the previous monolith had lower operational cost for the original scope.
+
+Each service still uses synchronous SQLite with WAL and short write transactions. These are independent single-host stores, not a multi-host clustered database. Horizontal service replicas need PostgreSQL (per service or separately permissioned databases) with row locking/unique constraints. HTTP outbox polling is sufficient for this demo; a broker can later carry the same versioned job/result contracts without changing durable identity rules. Add backpressure, shared rate limits, queue-age alerts, per-hospital scheduling, tracing and circuit breakers as measured load requires.

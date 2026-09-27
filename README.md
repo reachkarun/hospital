@@ -1,119 +1,103 @@
-# Rounding App backend
+# Rounding App — Node.js microservices
 
-Node.js 22 + TypeScript backend for [the assignment](TAKE_HOME_ASSIGNMENT.md). Implements **all three core components**: patient sync, charge submission, and offline sync coordination. No frontend or external accounts are needed.
+Five independently built/deployed TypeScript projects in one npm-workspace repository. The former monolithic `src/` application has been replaced; services communicate through authenticated HTTP APIs and **never read another service's database**.
 
-## Run locally
+| Project | Owns | Default port | Database/volume |
+|---|---|---|---|
+| [Gateway](services/gateway) | Public API routing, aggregate Swagger, authentication | **3002** | None |
+| [Patient service](services/patient-service) | Patients, providers, visits, assignments, source inbox, event ordering | 3101 | `patient-data` |
+| [Charge service](services/charge-service) | Drafts, offline operations, revisions, submission outbox, billing result projection | 3102 | `charge-data` |
+| [Billing service](services/billing-service) | Durable billing jobs, external retries, reconciliation, idempotency age | 3103 | `billing-service-data` |
+| [Billing mock](services/billing-mock) | Simulated hospital billing, persistent receipts, failure injection | 4001 | `billing-data` |
 
-Requires Node.js **22.13+** (tested on 22.19) and npm. The built-in SQLite driver emits an experimental warning on Node 22; this is expected.
+Each project has a `package.json`, `tsconfig.json`, Dockerfile, entrypoint and README. Only versioned wire contracts and infrastructure helpers live in `packages/`; there are no shared domain repositories or cross-service source imports. SQLite is private to each service, so storage can be replaced independently.
+
+## Start with Docker
+
+For a new installation:
+
+```sh
+docker compose up --build -d --wait
+```
+
+**Swagger: http://localhost:3002/docs/**
+
+Click **Authorize**, enter `demo-provider-one` (without `Bearer`), then try `GET /v1/patients`. Use `demo-integration-one` for patient source messages and `demo-admin-one` for admin endpoints. The OpenAPI document is at `/docs/json`.
+
+Only the gateway and mock publish host ports. Domain services are private on Docker's network; each has its own health check and named data volume. Set `API_HOST_PORT` to override port 3002. `docker compose down` preserves data. Avoid `down -v` unless you intend to erase the service databases.
+
+**Upgrading the previously installed monolith?** Follow [the migration procedure](docs/MIGRATION.md) before first starting the new services. It retains the old volume and imports all patient, charge, receipt and billing state without resetting the 24-hour clock.
+
+## Local development
+
+Requires Node.js 22.13+ and npm. Node 22's SQLite experimental warning is expected.
 
 ```sh
 npm ci
+npm run build
 npm run demo:start
 ```
 
-This starts the API, a separate billing worker, and a persistent billing mock. Two hospitals and synthetic patients/providers/visits are seeded automatically. All data persists in `data/`. API: **http://127.0.0.1:3000/health**. Mock: **http://127.0.0.1:4001/health**. Use a second terminal:
+`demo:start` starts all five processes with separate local databases under `data/`; it does not import `data/rounding.db` automatically. Do not run the local stack on ports already occupied by Docker.
+
+To develop or rebuild just one project after building the shared packages:
 
 ```sh
+npm run build:shared
+npm run build -w @rounding/charge-service
+npm run dev -w @rounding/charge-service
+```
+
+For manual starts, explicitly set `DEMO_MODE=true` (PowerShell: `$env:DEMO_MODE='true'`). Defaults for downstream URLs use the localhost service ports in the table. Each project can run independently; unavailable dependencies yield retryable failures rather than requiring all services to start together.
+
+Rebuild/deploy only a selected Docker project:
+
+```sh
+docker compose up -d --build --no-deps charge-service
+```
+
+## Exercise and verify
+
+Against either Docker or the local stack:
+
+```sh
+npm ci
+npm run build:shared
 npm run demo
 ```
 
-The repeatable, assertion-backed demo publishes a source event twice, saves offline drafts, detects a stale edit, recovers from a billing outage, handles partial acceptance, corrects the rejected item, reconciles a lost acknowledgment, and verifies hospital isolation and audit access. Each run uses new charge and operation IDs. Ctrl+C stops the local processes.
-
-If another application uses port 3000, select an alternate API port. In PowerShell, run `$env:PORT='3002'` before `npm run demo:start`; in the demo terminal, run `$env:API_URL='http://127.0.0.1:3002'` before `npm run demo`. Mock billing still uses port 4001.
-
-## Run with Docker
+The repeatable demo exercises duplicate broker events, offline draft conflicts, duplicate mobile submissions, a billing outage, partial acceptance, correction of rejected items, a lost acknowledgment, tenant isolation, and audit access. `API_URL` and `MOCK_URL` override its default localhost addresses.
 
 ```sh
-docker compose up --build
-```
-
-Docker exposes the API on **http://localhost:3002** (set `API_HOST_PORT` to override).
-Open **http://localhost:3002/docs/** for Swagger UI. Click **Authorize**, enter
-`demo-provider-one` without a `Bearer` prefix, and use **Try it out**.
-Use `demo-integration-one` for source events or `demo-admin-one` for audit/operations.
-The OpenAPI JSON is at `/docs/json`. Local `npm run demo:start` exposes the same
-documentation on its configured API port (3000 by default).
-
-The build runs TypeScript compilation and the automated tests. Compose starts `api`, `worker`, and `billing-mock` with health checks and named persistent volumes. Ports are bound to localhost. For the local demo script against Docker, set `API_URL=http://localhost:3002` (PowerShell: `$env:API_URL='http://localhost:3002'`) before `npm run demo`. Alternatively run the demo inside the API container:
-
-```sh
-docker compose exec -e MOCK_URL=http://billing-mock:4001 api node dist/scripts/demo.js
-```
-
-`docker compose down` preserves data. `docker compose down -v` deliberately deletes demonstration data. Do not run the local stack and Docker stack simultaneously on the same ports.
-
-## Validate
-
-```sh
-npm run typecheck
 npm test
-npm run build
+npm run typecheck
 npm audit
 ```
 
-Tests cover transaction rollback, event deduplication and ordering, dependency replay, schema quarantine, offline conflicts, authorization, tenant isolation, charge validation, post-discharge billing, partial acceptance, retries, lost acknowledgments, stale worker fencing, idempotency expiry, and disk persistence.
+Tests use separate database files and real HTTP between service instances. They also cover service outages, duplicate delivery after a lost inter-service response, external idempotency expiry, worker fencing, schema quarantine, migration restartability, and project boundaries.
 
-## Demo authentication
-
-Pass `Authorization: Bearer <token>`. Hospital and provider identity come from the token configuration, never from mobile request bodies or a hospital header.
+## Authentication and API
 
 | Token | Hospital | Role |
 |---|---|---|
-| `demo-provider-one` | HOSP-001 | PROV-789 provider |
-| `demo-provider-two` | HOSP-002 | PROV-789 provider |
-| `demo-integration-one` | HOSP-001 | Patient broker |
-| `demo-integration-two` | HOSP-002 | Patient broker |
-| `demo-admin-one` | HOSP-001 | Audit/operations administrator |
+| `demo-provider-one` | HOSP-001 | Provider PROV-789 |
+| `demo-provider-two` | HOSP-002 | Provider PROV-789 |
+| `demo-integration-one` | HOSP-001 | Source broker |
+| `demo-integration-two` | HOSP-002 | Source broker |
+| `demo-admin-one` | HOSP-001 | Administrator |
 
-The mock uses `demo-billing-secret`, separate from API credentials. Demo credentials work only when explicitly configured with `DEMO_MODE=true`. They are for synthetic data only.
+External API routes remain the same. Hospital identity is derived from credentials at the gateway and independently revalidated by each domain service. Internal encounter/job APIs require distinct service credentials and are not exposed by the gateway. Mock controls use `demo-billing-secret`.
 
-## API quick start
+Audit logs now belong to their owning services: `GET /v1/admin/audit?service=patient|charge|billing`; each has an independent sequence cursor. Default is `charge`, which also retains imported monolith audit records. `/v1/admin/metrics` aggregates counts under `patient`, `charge`, and `billing`.
 
-Use `curl.exe` in PowerShell or `curl` on macOS/Linux. JSON examples and a complete endpoint reference are in [docs/API.md](docs/API.md); [examples/requests.http](examples/requests.http) can be run with an IDE HTTP client.
+See [API examples](docs/API.md), [IDE HTTP requests](examples/requests.http), [architecture and ER diagrams](docs/ARCHITECTURE.md), [patient integration specification](docs/INTEGRATION.md), [operations](docs/OPERATIONS.md), and [migration](docs/MIGRATION.md).
 
-```http
-POST /v1/charges
-Authorization: Bearer demo-provider-one
-Content-Type: application/json
+## Reliability and limits
 
-{
-  "operationId": "device-a-edit-1",
-  "chargeId": "charge-001",
-  "expectedVersion": 0,
-  "charge": {
-    "visitId": "VISIT-001",
-    "serviceCode": "99213",
-    "quantity": 1,
-    "dateOfService": "2026-01-15",
-    "modifiers": ["25"],
-    "notes": "Synthetic encounter note"
-  }
-}
-```
+Saving a new draft or queuing a new submission resolves its encounter through Patient service first, outside the local transaction. The result is a point-in-time authorization/encounter snapshot. If Patient is unavailable, new edits/submissions return a retryable error; committed duplicate receipts and existing charge reads remain available.
 
-Then `POST /v1/submissions` with `{"clientSubmissionId":"mobile-batch-001","chargeIds":["charge-001"]}` and poll `GET /v1/submissions/{submissionId}`. Charge saves never call billing. Only explicit submission queues work.
+Charge service commits charge locks and an immutable outbox request atomically. Its dispatcher delivers that request to Billing with a permanent internal submission ID. Billing persists before acknowledging and can continue processing while Charge is down. Charge later polls the durable job state and atomically projects item results into its own database. Lost responses at either boundary are safe to replay.
 
-## Structure and design
+External billing has only a **24-hour idempotency window**. Billing service retains the original key and first-attempt timestamp, queries before retrying, and stops blind POSTs after **23 hours**. Unresolved charges remain locked in `REVIEW`; neither inter-service delivery nor manual retry resets the clock. Accepted charges are never included in a corrected batch. Indefinite exactly-once progress still requires stronger guarantees from the external billing system.
 
-| File | Responsibility |
-|---|---|
-| `src/api.ts` | HTTP routes, authentication, role checks, limits, safe errors |
-| `src/contracts.ts` | Mobile contracts and domain errors |
-| `src/patients.ts` | Six patient event types, inbox, deduplication, field clocks, replay |
-| `src/charges.ts` | Draft versions, operation receipts, billing outbox transaction |
-| `src/billing.ts` | HTTP adapter, leased worker, backoff, acknowledgment validation |
-| `src/db.ts` | Tenant-scoped schema, transactions, audit and revision triggers |
-| `src/mock-billing.ts` | Durable external mock, outage/rate-limit/lost-ack injection |
-| `scripts/demo.ts` | Source-system mock publisher and end-to-end demonstration |
-
-Read [architecture and ER diagrams](docs/ARCHITECTURE.md), [patient integration specification](docs/INTEGRATION.md), and [resiliency and walkthrough notes](docs/OPERATIONS.md).
-
-## Scope and deliberate limits
-
-This is a runnable single-host take-home implementation. SQLite keeps installation simple and provides durable transactional behavior; synchronous database work and one writer limit throughput. The application supports competing processes on the **same local database file**, not SQLite over network filesystems or replicas on multiple hosts. A PostgreSQL migration is the next step for horizontal scaling.
-
-The patient broker is simulated by an authenticated HTTP delivery adapter; no live AMQP connection is claimed. The durable inbox and consumer are implemented independently of delivery. Event timestamps produce deterministic per-field projections; arbitrary late delivery cannot promise literal global timestamp execution order without a broker sequence/watermark contract.
-
-Billing deduplicates for only 24 hours. The worker reuses the same billing key, reconciles retries, and stops blind resubmission after 23 hours. Unresolved outcomes enter `REVIEW`, keeping charges locked. **Unconditional exactly-once delivery across an unlimited outage is impossible with the supplied external contract**; this implementation favors avoiding duplicate billing over automatic progress after expiry.
-
-Outside demo mode, configure `AUTH_TOKENS` as a JSON map of long bearer tokens to `{hospital,provider,role}` and `BILLING_TOKEN`. Hospital records and billing URLs must be provisioned by a trusted operator; demo seeding is disabled. API and worker use the same database path. This project does not provide production identity management, encryption at rest, retention automation, or a HIPAA compliance certification.
+Microservice boundaries do not make SQLite horizontally scalable: each service is a single-host deployment with a private durable database. PostgreSQL per service is the next step for replicas across hosts. HTTP outbox polling is deliberate; no Kafka/RabbitMQ installation is needed for this take-home. Demo authentication, transport, encryption/retention and observability require production hardening before real PHI use.

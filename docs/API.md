@@ -1,6 +1,6 @@
 # API reference
 
-Base URL: `http://127.0.0.1:3000`. All endpoints except `/health` require a bearer credential. Payloads and results are JSON. Error responses contain a safe machine-readable code and request ID; input errors expose field paths, not submitted PHI. Responses use `Cache-Control: no-store`.
+Base URL: `http://localhost:3002` (Gateway). Interactive Swagger: `/docs/`. Business endpoints require a bearer credential; health and documentation are public. Payloads and results are JSON. Error responses contain a safe machine-readable code and request ID; input errors expose field paths, not submitted PHI. Responses use `Cache-Control: no-store`.
 
 ## Endpoints
 
@@ -20,10 +20,10 @@ Base URL: `http://127.0.0.1:3000`. All endpoints except `/health` require a bear
 | POST | `/v1/integrations/patient-events` | Integration | Consume normalized source event |
 | GET | `/v1/admin/inbox?after=0&limit=50` | Admin | Inbox status/errors; numeric row cursor, no clinical bodies |
 | POST | `/v1/admin/inbox/replay` | Admin | Retry up to 100 missing-dependency events |
-| GET | `/v1/admin/audit?after=0&limit=50` | Admin | Tenant audit, ascending sequence cursor |
-| GET | `/v1/admin/metrics` | Admin | Tenant submission/inbox counts by status |
+| GET | `/v1/admin/audit?service=charge&after=0&limit=50` | Admin | Service-owned tenant audit; service is patient, charge, or billing |
+| GET | `/v1/admin/metrics` | Admin | Counts grouped under patient, charge, and billing |
 
-All list limits are 1–100. For patient/charge lists, use `nextCursor` until null. Admin lists use the last `cursor`/`sequence` value as `after`. Charge polling is a paginated current snapshot, not a delta-feed protocol; clients explicitly refresh known charge IDs after queued submissions.
+All list limits are 1–100. For patient/charge lists, use `nextCursor` until null. Admin lists use the last `cursor`/`sequence` value as `after`; audit cursors are independent per service. Charge polling is a paginated current snapshot, not a delta-feed protocol; clients explicitly refresh known charge IDs after queued submissions. Billing result projection is eventually consistent across services.
 
 ## Create or edit a draft
 

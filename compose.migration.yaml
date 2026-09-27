@@ -1,0 +1,22 @@
+services:
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.migration
+    environment:
+      LEGACY_DATABASE_PATH: /legacy/rounding.db
+      PATIENT_DATABASE_PATH: /patient/patients.db
+      CHARGE_DATABASE_PATH: /charge/charges.db
+      BILLING_DATABASE_PATH: /billing/billing.db
+    volumes:
+      - legacy-data:/legacy:ro
+      - patient-data:/patient
+      - charge-data:/charge
+      - billing-service-data:/billing
+volumes:
+  legacy-data:
+    external: true
+    name: take_home_assignment_rounding-data
+  patient-data:
+  charge-data:
+  billing-service-data:

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
-import { sampleEvent } from '../src/seed.js';
+import { sampleEvent } from '@rounding/contracts/sample';
 
-const base = process.env.API_URL ?? 'http://127.0.0.1:3000';
+const base = process.env.API_URL ?? 'http://127.0.0.1:3002';
 const mock = process.env.MOCK_URL ?? 'http://127.0.0.1:4001';
 const run = randomUUID();
 async function request(path: string, body?: unknown, token = 'demo-provider-one', origin = base) {
