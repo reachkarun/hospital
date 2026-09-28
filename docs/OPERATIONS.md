@@ -35,19 +35,19 @@ There is no safe general algorithm that both automatically progresses and guaran
 
 ## Partial failure policy
 
-| Failure | Durable behavior | Recovery |
-|---|---|---|
-| API process dies before transaction commit | Nothing committed | Mobile/broker retries same IDs |
-| API response lost after commit | Receipt exists | Same IDs return committed result |
-| Charge dispatcher dies during PUT | Outbox lease expires; Billing may already own job | Replay the same internal job ID and payload |
-| Billing worker dies before/after POST | SENDING lease expires | Reclaim; query external billing; same-key replay if safe |
-| Billing commits but response lost | Charges remain locked | Status reconciliation restores acknowledgment |
-| Some items rejected | Accepted immutable, rejected editable | Correct rejected items and create a new batch |
-| Invalid/incomplete acknowledgment | No item status changed | Retry/reconcile, then review after ceiling |
-| Billing 400 | FAILED, charge errors retained | Correct drafts and submit a new logical batch |
-| Patient prerequisite missing | WAITING inbox | Automatic/admin replay after source data arrives |
-| New schema or invalid payload | QUARANTINED inbox | Review and publish corrected/new-version message |
-| Stale mobile version | 409 with current authorized charge | Provider resolves and sends a new operation |
+| Failure                                    | Durable behavior                                  | Recovery                                                 |
+| ------------------------------------------ | ------------------------------------------------- | -------------------------------------------------------- |
+| API process dies before transaction commit | Nothing committed                                 | Mobile/broker retries same IDs                           |
+| API response lost after commit             | Receipt exists                                    | Same IDs return committed result                         |
+| Charge dispatcher dies during PUT          | Outbox lease expires; Billing may already own job | Replay the same internal job ID and payload              |
+| Billing worker dies before/after POST      | SENDING lease expires                             | Reclaim; query external billing; same-key replay if safe |
+| Billing commits but response lost          | Charges remain locked                             | Status reconciliation restores acknowledgment            |
+| Some items rejected                        | Accepted immutable, rejected editable             | Correct rejected items and create a new batch            |
+| Invalid/incomplete acknowledgment          | No item status changed                            | Retry/reconcile, then review after ceiling               |
+| Billing 400                                | FAILED, charge errors retained                    | Correct drafts and submit a new logical batch            |
+| Patient prerequisite missing               | WAITING inbox                                     | Automatic/admin replay after source data arrives         |
+| New schema or invalid payload              | QUARANTINED inbox                                 | Review and publish corrected/new-version message         |
+| Stale mobile version                       | 409 with current authorized charge                | Provider resolves and sends a new operation              |
 
 Hospital billing endpoints live in trusted `hospitals.billing_url` configuration; clients cannot supply arbitrary URLs. The worker deliberately disables redirects and bounds response bodies. One slow hospital can delay this single worker; more same-host workers can help the demo, while production should add per-hospital concurrency budgets/circuit breaking for fairness.
 
@@ -69,16 +69,16 @@ Each domain service's health endpoint checks its own database, not dependency av
 
 ## Assignment coverage
 
-| Requirement | Implementation/evidence |
-|---|---|
-| Architecture/ER diagrams, module rationale | ARCHITECTURE.md |
-| Option A: Charge Submission | services/charge-service; services/billing-service |
-| Option B: Patient Sync | services/patient-service; six events; durable inbox and replay |
-| Option C: Offline Coordinator | Charge /v1/sync, operation receipts, compare-and-swap versions |
-| Integration specification | INTEGRATION.md, executable Zod schemas |
-| Tenant isolation/security | Authenticated principals, composite keys, role checks, bounded input |
-| Clinical notes/audit | Draft snapshots, charge revisions, audit, original source envelopes |
-| Outages/partial acceptance | Leased outbox, backoff, reconciliation, per-item outcomes |
-| Standalone mocks and seeds | Patient seed, services/billing-mock, scripts/demo.ts |
-| Local/container run | npm run demo:start; per-project Dockerfiles; compose.yaml |
-| Testable edge cases | tests/patient.test.ts, billing.test.ts, microservices.test.ts, migration.test.ts |
+| Requirement                                | Implementation/evidence                                                          |
+| ------------------------------------------ | -------------------------------------------------------------------------------- |
+| Architecture/ER diagrams, module rationale | ARCHITECTURE.md                                                                  |
+| Option A: Charge Submission                | services/charge-service; services/billing-service                                |
+| Option B: Patient Sync                     | services/patient-service; six events; durable inbox and replay                   |
+| Option C: Offline Coordinator              | Charge /v1/sync, operation receipts, compare-and-swap versions                   |
+| Integration specification                  | INTEGRATION.md, executable Zod schemas                                           |
+| Tenant isolation/security                  | Authenticated principals, composite keys, role checks, bounded input             |
+| Clinical notes/audit                       | Draft snapshots, charge revisions, audit, original source envelopes              |
+| Outages/partial acceptance                 | Leased outbox, backoff, reconciliation, per-item outcomes                        |
+| Standalone mocks and seeds                 | Patient seed, services/billing-mock, scripts/demo.ts                             |
+| Local/container run                        | npm run demo:start; per-project Dockerfiles; compose.yaml                        |
+| Testable edge cases                        | tests/patient.test.ts, billing.test.ts, microservices.test.ts, migration.test.ts |

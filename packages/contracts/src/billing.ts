@@ -1,4 +1,4 @@
-import { z } from 'zod';
+import { z } from "zod";
 type Json = Record<string, any>;
 const accepted = z.object({
   chargeId: z.string(),
@@ -43,4 +43,3 @@ export function validateAck(body: Json, row: Json): Json | null {
     return null;
   return ack;
 }
-

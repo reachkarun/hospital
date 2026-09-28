@@ -1,7 +1,9 @@
-import { Database } from '@rounding/platform/db';
-export { timestamp, type Json } from '@rounding/platform/db';
+import { Database } from "@rounding/platform/db";
+export { timestamp, type Json } from "@rounding/platform/db";
 export class Store extends Database {
- constructor(path = ':memory:') { super(path); this.db.exec(`
+  constructor(path = ":memory:") {
+    super(path);
+    this.db.exec(`
 CREATE TABLE IF NOT EXISTS charges(
         hospital TEXT NOT NULL REFERENCES hospitals(id),id TEXT NOT NULL,provider TEXT NOT NULL,
         visit TEXT NOT NULL,body TEXT NOT NULL,version INTEGER NOT NULL,status TEXT NOT NULL,
@@ -30,7 +32,19 @@ CREATE TABLE IF NOT EXISTS charges(
       CREATE INDEX IF NOT EXISTS submissions_due ON submissions(status,next_at,lease_until);
       
 `);
- const columns = this.all('PRAGMA table_info(submissions)').map(c => c.name);
- for (const [name, definition] of Object.entries({dispatch_at:'INTEGER NOT NULL DEFAULT 0',dispatch_lease:'INTEGER NOT NULL DEFAULT 0',dispatch_token:'TEXT',retry_request:'TEXT'})) { if (!columns.includes(name)) this.db.exec('ALTER TABLE submissions ADD COLUMN '+name+' '+definition); }
- }
+    const columns = this.all("PRAGMA table_info(submissions)").map(
+      (c) => c.name,
+    );
+    for (const [name, definition] of Object.entries({
+      dispatch_at: "INTEGER NOT NULL DEFAULT 0",
+      dispatch_lease: "INTEGER NOT NULL DEFAULT 0",
+      dispatch_token: "TEXT",
+      retry_request: "TEXT",
+    })) {
+      if (!columns.includes(name))
+        this.db.exec(
+          "ALTER TABLE submissions ADD COLUMN " + name + " " + definition,
+        );
+    }
+  }
 }

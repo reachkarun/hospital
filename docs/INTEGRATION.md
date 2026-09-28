@@ -18,26 +18,43 @@ Gateway routes source events to Patient service. The executable schema is [`enve
   "payload": {
     "assignmentId": "ASSIGN-123",
     "patient": {
-      "id": "PAT-456", "mrn": "SYNTHETIC-123", "firstName": "Jane", "lastName": "Example",
-      "dateOfBirth": "1985-03-20", "gender": "F",
-      "allergies": ["Penicillin"], "conditions": ["Hypertension"],
-      "medications": [{"name": "Lisinopril", "dose": "10 mg daily"}]
+      "id": "PAT-456",
+      "mrn": "SYNTHETIC-123",
+      "firstName": "Jane",
+      "lastName": "Example",
+      "dateOfBirth": "1985-03-20",
+      "gender": "F",
+      "allergies": ["Penicillin"],
+      "conditions": ["Hypertension"],
+      "medications": [{ "name": "Lisinopril", "dose": "10 mg daily" }]
     },
-    "provider": {"id": "PROV-789", "npi": "1234567890", "name": "Dr. Alex Example", "specialty": "Internal Medicine"},
-    "visit": {"id": "VISIT-001", "admissionDate": "2026-01-14T08:00:00Z", "room": "301A", "bed": "1", "unit": "Cardiology", "status": "ACTIVE"},
+    "provider": {
+      "id": "PROV-789",
+      "npi": "1234567890",
+      "name": "Dr. Alex Example",
+      "specialty": "Internal Medicine"
+    },
+    "visit": {
+      "id": "VISIT-001",
+      "admissionDate": "2026-01-14T08:00:00Z",
+      "room": "301A",
+      "bed": "1",
+      "unit": "Cardiology",
+      "status": "ACTIVE"
+    },
     "assignedAt": "2026-01-15T09:30:00Z"
   }
 }
 ```
 
-| Field | Schema |
-|---|---|
-| messageId, source, hospitalId | Required string, 1–100 chars, `A-Z a-z 0-9 _ . : -` |
-| eventType | Required string, max 80 chars; supported values below |
-| timestamp | Required ISO 8601 datetime with `Z` or explicit offset |
-| correlationId | Optional identifier |
-| version | Required string; only `1.0` is applied |
-| payload | Required object; validated by event type |
+| Field                         | Schema                                                 |
+| ----------------------------- | ------------------------------------------------------ |
+| messageId, source, hospitalId | Required string, 1–100 chars, `A-Z a-z 0-9 _ . : -`    |
+| eventType                     | Required string, max 80 chars; supported values below  |
+| timestamp                     | Required ISO 8601 datetime with `Z` or explicit offset |
+| correlationId                 | Optional identifier                                    |
+| version                       | Required string; only `1.0` is applied                 |
+| payload                       | Required object; validated by event type               |
 
 `messageId` must be unique across all sources **within a hospital**. The enterprise broker normalizes identifiers into a hospital-wide namespace. Different hospitals may reuse IDs. Reusing a message ID for different contents is a contract violation (409), not a new event.
 
@@ -45,14 +62,14 @@ Gateway routes source events to Patient service. The executable schema is [`enve
 
 All IDs follow the identifier schema above. All event datetimes require timezone offsets. Patient birth dates are calendar dates. Unknown envelope fields are retained for compatible evolution; unknown fields in supported snapshot payloads are ignored. Unsupported versions or event types are quarantined.
 
-| Type | Required payload | Optional payload |
-|---|---|---|
-| PATIENT_ASSIGNMENT | `assignmentId`, `patient`, `provider`, `visit`, `assignedAt` | Optional patient/provider/visit fields below |
-| PATIENT_UNASSIGNMENT | `assignmentId`, `patientId`, `providerId`, `visitId`, `unassignedAt` | None |
-| PATIENT_UPDATE | `patientId`, `changes`, `updatedAt` | `mrn` |
-| VISIT_ADMISSION | `patient`, `visit` | Optional snapshot fields |
-| VISIT_LOCATION_CHANGE | `visitId`, `patientId`, `newLocation`, `changedAt` | Unknown metadata such as previousLocation/reason is ignored |
-| VISIT_DISCHARGE | `visitId`, `patientId`, `dischargeDate`, `dischargeStatus` | `providerId`, `dischargeInstructions` (max 4000 chars) |
+| Type                  | Required payload                                                     | Optional payload                                            |
+| --------------------- | -------------------------------------------------------------------- | ----------------------------------------------------------- |
+| PATIENT_ASSIGNMENT    | `assignmentId`, `patient`, `provider`, `visit`, `assignedAt`         | Optional patient/provider/visit fields below                |
+| PATIENT_UNASSIGNMENT  | `assignmentId`, `patientId`, `providerId`, `visitId`, `unassignedAt` | None                                                        |
+| PATIENT_UPDATE        | `patientId`, `changes`, `updatedAt`                                  | `mrn`                                                       |
+| VISIT_ADMISSION       | `patient`, `visit`                                                   | Optional snapshot fields                                    |
+| VISIT_LOCATION_CHANGE | `visitId`, `patientId`, `newLocation`, `changedAt`                   | Unknown metadata such as previousLocation/reason is ignored |
+| VISIT_DISCHARGE       | `visitId`, `patientId`, `dischargeDate`, `dischargeStatus`           | `providerId`, `dischargeInstructions` (max 4000 chars)      |
 
 `patient`: `id`, nonempty `mrn`, `firstName`, `lastName`, calendar `dateOfBirth`, `gender`. Optional `phone`, string-valued `address`/`emergencyContact` objects, and arrays `allergies`, `conditions`, `medications` (up to 200 entries each, strings or structured objects). Each array is a complete replacement snapshot; absent fields are preserved. An empty array explicitly clears the list.
 
@@ -65,11 +82,24 @@ All IDs follow the identifier schema above. All event datetimes require timezone
 The assignment did not define admission/unassignment payloads; the schemas above are explicit implementation assumptions. For example:
 
 ```json
-{"assignmentId":"ASSIGN-123","patientId":"PAT-456","providerId":"PROV-789","visitId":"VISIT-001","unassignedAt":"2026-01-16T14:00:00Z"}
+{
+  "assignmentId": "ASSIGN-123",
+  "patientId": "PAT-456",
+  "providerId": "PROV-789",
+  "visitId": "VISIT-001",
+  "unassignedAt": "2026-01-16T14:00:00Z"
+}
 ```
 
 ```json
-{"patientId":"PAT-456","changes":{"phone":{"old":"555-0100","new":"555-0200"},"allergies":{"new":["Penicillin"]}},"updatedAt":"2026-01-16T10:00:00Z"}
+{
+  "patientId": "PAT-456",
+  "changes": {
+    "phone": { "old": "555-0100", "new": "555-0200" },
+    "allergies": { "new": ["Penicillin"] }
+  },
+  "updatedAt": "2026-01-16T10:00:00Z"
+}
 ```
 
 ## Reliable processing and deduplication

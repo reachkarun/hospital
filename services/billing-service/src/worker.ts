@@ -95,7 +95,7 @@ export class HttpBilling implements BillingTransport {
   }
 }
 
-import { validateAck } from '@rounding/contracts/billing';
+import { validateAck } from "@rounding/contracts/billing";
 
 export class BillingWorker {
   constructor(

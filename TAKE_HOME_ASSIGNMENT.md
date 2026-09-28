@@ -51,6 +51,7 @@ Multiple Patient Source Software systems may exist at each hospital (e.g., EHR s
 ### Users
 
 Healthcare providers who access the system via mobile devices. They may:
+
 - Work in areas with poor network connectivity
 - Need to save work in progress and continue later
 - Require audit trails for compliance
@@ -229,6 +230,7 @@ Document how your system handles:
    - Error handling strategy
 
 **Submission Format:**
+
 - You will NOT submit your code to us directly.
 - The code must be runnable on your local machine.
 - We recommend containerizing your solution (Docker/docker-compose) to simplify setup.
@@ -313,6 +315,7 @@ You will NOT submit your code to us directly. Instead:
 **Need more time?** If you need an extension, just ask. We understand life happens. Better to deliver quality work on a revised timeline than to rush and submit something you're not proud of.
 
 Before the call, make sure:
+
 - Your solution runs with a single `docker-compose up` command (or equivalent)
 - The system includes mocks for the external Patient Source System consumer and Billing System API—no external infrastructure required
 - You have seed data loaded to demonstrate the flow
@@ -404,20 +407,20 @@ All messages share a common envelope structure:
   "hospitalId": "HOSP-001",
   "correlationId": "REQ-123",
   "version": "1.0",
-  "payload": { }
+  "payload": {}
 }
 ```
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `messageId` | string | Unique identifier for this message (use for deduplication) |
-| `eventType` | string | Type of event (see below) |
-| `timestamp` | ISO8601 | When the event occurred at the source |
-| `source` | string | Originating system identifier |
-| `hospitalId` | string | Hospital this message belongs to |
-| `correlationId` | string | Optional. Links related messages together |
-| `version` | string | Schema version for this message |
-| `payload` | object | Event-specific data |
+| Field           | Type    | Description                                                |
+| --------------- | ------- | ---------------------------------------------------------- |
+| `messageId`     | string  | Unique identifier for this message (use for deduplication) |
+| `eventType`     | string  | Type of event (see below)                                  |
+| `timestamp`     | ISO8601 | When the event occurred at the source                      |
+| `source`        | string  | Originating system identifier                              |
+| `hospitalId`    | string  | Hospital this message belongs to                           |
+| `correlationId` | string  | Optional. Links related messages together                  |
+| `version`       | string  | Schema version for this message                            |
+| `payload`       | object  | Event-specific data                                        |
 
 ### Event Types
 
@@ -645,26 +648,26 @@ X-Hospital-Id: HOSP-001
 
 **Field Definitions**:
 
-| Field | Required | Description |
-|-------|----------|-------------|
-| `submissionId` | Yes | Your system's unique identifier for this submission |
-| `providerId` | Yes | Provider identifier in your system |
-| `providerNpi` | Yes | National Provider Identifier (10 digits) |
-| `hospitalId` | Yes | Hospital identifier |
-| `patientId` | Yes | Patient identifier in your system |
-| `patientMrn` | Yes | Medical Record Number |
-| `visitId` | Yes | Visit/encounter identifier |
-| `charges` | Yes | Array of 1-100 charge items |
-| `charges[].chargeId` | Yes | Unique identifier for this charge |
-| `charges[].serviceCode` | Yes | CPT/HCPCS code |
-| `charges[].description` | No | Human-readable description |
-| `charges[].quantity` | Yes | Number of units (positive integer) |
-| `charges[].unitPrice` | No | Price per unit in USD |
-| `charges[].dateOfService` | Yes | Date service was performed (YYYY-MM-DD) |
-| `charges[].modifiers` | No | Array of CPT modifiers |
-| `charges[].notes` | No | Clinical notes (max 2000 chars) |
-| `submittedAt` | Yes | ISO8601 timestamp of submission |
-| `clientSubmissionId` | Yes | Idempotency key for the client |
+| Field                     | Required | Description                                         |
+| ------------------------- | -------- | --------------------------------------------------- |
+| `submissionId`            | Yes      | Your system's unique identifier for this submission |
+| `providerId`              | Yes      | Provider identifier in your system                  |
+| `providerNpi`             | Yes      | National Provider Identifier (10 digits)            |
+| `hospitalId`              | Yes      | Hospital identifier                                 |
+| `patientId`               | Yes      | Patient identifier in your system                   |
+| `patientMrn`              | Yes      | Medical Record Number                               |
+| `visitId`                 | Yes      | Visit/encounter identifier                          |
+| `charges`                 | Yes      | Array of 1-100 charge items                         |
+| `charges[].chargeId`      | Yes      | Unique identifier for this charge                   |
+| `charges[].serviceCode`   | Yes      | CPT/HCPCS code                                      |
+| `charges[].description`   | No       | Human-readable description                          |
+| `charges[].quantity`      | Yes      | Number of units (positive integer)                  |
+| `charges[].unitPrice`     | No       | Price per unit in USD                               |
+| `charges[].dateOfService` | Yes      | Date service was performed (YYYY-MM-DD)             |
+| `charges[].modifiers`     | No       | Array of CPT modifiers                              |
+| `charges[].notes`         | No       | Clinical notes (max 2000 chars)                     |
+| `submittedAt`             | Yes      | ISO8601 timestamp of submission                     |
+| `clientSubmissionId`      | Yes      | Idempotency key for the client                      |
 
 **Success Response** (HTTP 200):
 

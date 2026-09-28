@@ -38,4 +38,3 @@ export function sampleEvent(hospitalId = "HOSP-001") {
     },
   };
 }
-

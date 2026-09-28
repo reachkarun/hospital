@@ -1,6 +1,6 @@
-import { Store } from './store.js';
-import { consume } from './patients.js';
-import { sampleEvent } from '@rounding/contracts/sample';
+import { Store } from "./store.js";
+import { consume } from "./patients.js";
+import { sampleEvent } from "@rounding/contracts/sample";
 export function seed(store: Store, billingUrl: string) {
   for (const [hospital, name] of [
     ["HOSP-001", "Memorial Demo Hospital"],

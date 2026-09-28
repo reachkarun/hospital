@@ -2,15 +2,17 @@
 
 Five independently built/deployed TypeScript projects in one npm-workspace repository. The former monolithic `src/` application has been replaced; services communicate through authenticated HTTP APIs and **never read another service's database**.
 
-| Project | Owns | Default port | Database/volume |
-|---|---|---|---|
-| [Gateway](services/gateway) | Public API routing, aggregate Swagger, authentication | **3002** | None |
-| [Patient service](services/patient-service) | Patients, providers, visits, assignments, source inbox, event ordering | 3101 | `patient-data` |
-| [Charge service](services/charge-service) | Drafts, offline operations, revisions, submission outbox, billing result projection | 3102 | `charge-data` |
-| [Billing service](services/billing-service) | Durable billing jobs, external retries, reconciliation, idempotency age | 3103 | `billing-service-data` |
-| [Billing mock](services/billing-mock) | Simulated hospital billing, persistent receipts, failure injection | 4001 | `billing-data` |
+| Project                                     | Owns                                                                                | Default port | Database/volume        |
+| ------------------------------------------- | ----------------------------------------------------------------------------------- | ------------ | ---------------------- |
+| [Gateway](services/gateway)                 | Public API routing, aggregate Swagger, authentication                               | **3002**     | None                   |
+| [Patient service](services/patient-service) | Patients, providers, visits, assignments, source inbox, event ordering              | 3101         | `patient-data`         |
+| [Charge service](services/charge-service)   | Drafts, offline operations, revisions, submission outbox, billing result projection | 3102         | `charge-data`          |
+| [Billing service](services/billing-service) | Durable billing jobs, external retries, reconciliation, idempotency age             | 3103         | `billing-service-data` |
+| [Billing mock](services/billing-mock)       | Simulated hospital billing, persistent receipts, failure injection                  | 4001         | `billing-data`         |
 
 Each project has a `package.json`, `tsconfig.json`, Dockerfile, entrypoint and README. Only versioned wire contracts and infrastructure helpers live in `packages/`; there are no shared domain repositories or cross-service source imports. SQLite is private to each service, so storage can be replaced independently.
+
+For a detailed presentation script, design explanations, failure scenarios, demo steps, and panel questions, see the [interview guide](docs/INTERVIEW_GUIDE.md).
 
 ## Start with Docker
 
@@ -78,13 +80,13 @@ Tests use separate database files and real HTTP between service instances. They 
 
 ## Authentication and API
 
-| Token | Hospital | Role |
-|---|---|---|
-| `demo-provider-one` | HOSP-001 | Provider PROV-789 |
-| `demo-provider-two` | HOSP-002 | Provider PROV-789 |
-| `demo-integration-one` | HOSP-001 | Source broker |
-| `demo-integration-two` | HOSP-002 | Source broker |
-| `demo-admin-one` | HOSP-001 | Administrator |
+| Token                  | Hospital | Role              |
+| ---------------------- | -------- | ----------------- |
+| `demo-provider-one`    | HOSP-001 | Provider PROV-789 |
+| `demo-provider-two`    | HOSP-002 | Provider PROV-789 |
+| `demo-integration-one` | HOSP-001 | Source broker     |
+| `demo-integration-two` | HOSP-002 | Source broker     |
+| `demo-admin-one`       | HOSP-001 | Administrator     |
 
 External API routes remain the same. Hospital identity is derived from credentials at the gateway and independently revalidated by each domain service. Internal encounter/job APIs require distinct service credentials and are not exposed by the gateway. Mock controls use `demo-billing-secret`.
 

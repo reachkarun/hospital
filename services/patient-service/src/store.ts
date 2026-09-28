@@ -1,7 +1,9 @@
-import { Database, type Json } from '@rounding/platform/db';
-export { timestamp, type Json } from '@rounding/platform/db';
+import { Database, type Json } from "@rounding/platform/db";
+export { timestamp, type Json } from "@rounding/platform/db";
 export class Store extends Database {
- constructor(path = ':memory:') { super(path); this.db.exec(`
+  constructor(path = ":memory:") {
+    super(path);
+    this.db.exec(`
 CREATE TABLE IF NOT EXISTS entities(
         hospital TEXT NOT NULL REFERENCES hospitals(id),kind TEXT NOT NULL,id TEXT NOT NULL,
         body TEXT NOT NULL,PRIMARY KEY(hospital,kind,id));
@@ -14,7 +16,8 @@ CREATE TABLE IF NOT EXISTS entities(
         PRIMARY KEY(hospital,id));
       CREATE INDEX IF NOT EXISTS inbox_pending ON inbox(hospital,status);
       
-`); }
+`);
+  }
   entity(hospital: string, kind: string, id: string): Json | undefined {
     const row = this.get(
       "SELECT body FROM entities WHERE hospital=? AND kind=? AND id=?",

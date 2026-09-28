@@ -7,8 +7,11 @@ import {
   type SaveCharge,
   type Submit,
 } from "@rounding/contracts";
-import { type Encounter } from '@rounding/contracts/internal';
-export type ResolveEncounter = (p: Principal, visitId: string) => Promise<Encounter>;
+import { type Encounter } from "@rounding/contracts/internal";
+export type ResolveEncounter = (
+  p: Principal,
+  visitId: string,
+) => Promise<Encounter>;
 
 export function viewCharge(row: Json) {
   return {
@@ -28,7 +31,9 @@ function authorizeVisit(
   date: string,
 ) {
   check(
-    visit.hospitalId === p.hospital && visit.providerId === p.provider && visit.visitId === visitId,
+    visit.hospitalId === p.hospital &&
+      visit.providerId === p.provider &&
+      visit.visitId === visitId,
     404,
     "VISIT_NOT_FOUND",
   );
@@ -52,10 +57,23 @@ function authorizeVisit(
   return visit;
 }
 
-export async function save(store: Store, p: Principal, input: SaveCharge, resolve: ResolveEncounter) {
+export async function save(
+  store: Store,
+  p: Principal,
+  input: SaveCharge,
+  resolve: ResolveEncounter,
+) {
   // Committed retries remain available even while the Patient service is down.
-  const receipt = store.get('SELECT * FROM operations WHERE hospital=? AND provider=? AND id=?', p.hospital, p.provider, input.operationId);
-  if (receipt) { check(receipt.digest === digest(input), 409, 'OPERATION_ID_REUSED'); return JSON.parse(receipt.response); }
+  const receipt = store.get(
+    "SELECT * FROM operations WHERE hospital=? AND provider=? AND id=?",
+    p.hospital,
+    p.provider,
+    input.operationId,
+  );
+  if (receipt) {
+    check(receipt.digest === digest(input), 409, "OPERATION_ID_REUSED");
+    return JSON.parse(receipt.response);
+  }
   const context = await resolve(p, input.charge.visitId);
   return store.transaction(() => {
     const hash = digest(input);
@@ -69,7 +87,12 @@ export async function save(store: Store, p: Principal, input: SaveCharge, resolv
       check(prior.digest === hash, 409, "OPERATION_ID_REUSED");
       return JSON.parse(prior.response);
     }
-    authorizeVisit(context, p, input.charge.visitId, input.charge.dateOfService);
+    authorizeVisit(
+      context,
+      p,
+      input.charge.visitId,
+      input.charge.dateOfService,
+    );
     const old = store.get(
       "SELECT * FROM charges WHERE hospital=? AND id=?",
       p.hospital,
@@ -133,12 +156,30 @@ export function submissionView(row: Json) {
   };
 }
 
-export async function submitCharges(store: Store, p: Principal, input: Submit, resolve: ResolveEncounter) {
+export async function submitCharges(
+  store: Store,
+  p: Principal,
+  input: Submit,
+  resolve: ResolveEncounter,
+) {
   const hash = digest({ ...input, chargeIds: [...input.chargeIds].sort() });
-  const receipt = store.get('SELECT * FROM submissions WHERE hospital=? AND provider=? AND client_key=?', p.hospital, p.provider, input.clientSubmissionId);
-  if (receipt) { check(receipt.digest === hash, 409, 'SUBMISSION_KEY_REUSED'); return submissionView(receipt); }
-  const first = store.get('SELECT visit FROM charges WHERE hospital=? AND provider=? AND id=?', p.hospital, p.provider, input.chargeIds[0]!);
-  check(first, 404, 'CHARGE_NOT_FOUND');
+  const receipt = store.get(
+    "SELECT * FROM submissions WHERE hospital=? AND provider=? AND client_key=?",
+    p.hospital,
+    p.provider,
+    input.clientSubmissionId,
+  );
+  if (receipt) {
+    check(receipt.digest === hash, 409, "SUBMISSION_KEY_REUSED");
+    return submissionView(receipt);
+  }
+  const first = store.get(
+    "SELECT visit FROM charges WHERE hospital=? AND provider=? AND id=?",
+    p.hospital,
+    p.provider,
+    input.chargeIds[0]!,
+  );
+  check(first, 404, "CHARGE_NOT_FOUND");
   const context = await resolve(p, first.visit);
   return store.transaction(() => {
     const hash = digest({ ...input, chargeIds: [...input.chargeIds].sort() });
@@ -174,7 +215,9 @@ export async function submitCharges(store: Store, p: Principal, input: Submit, r
       ...JSON.parse(row.body),
     }));
     authorizeVisit(context, p, visitId, charges[0]!.dateOfService);
-    charges.forEach((c) => authorizeVisit(context, p, visitId, c.dateOfService));
+    charges.forEach((c) =>
+      authorizeVisit(context, p, visitId, c.dateOfService),
+    );
     const submissionId = randomUUID();
     const payload = {
       submissionId,
