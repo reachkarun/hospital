@@ -4,7 +4,7 @@
 
 `POST /v1/integrations/patient-events`, with a hospital-specific **integration** bearer credential, is the mock broker's delivery adapter. `scripts/demo.ts` is a runnable source publisher. The transport-independent `consume(store, hospital, input)` function is the production consumer seam; an AMQP client can invoke it and ACK only after it returns. The hospital comes from the authenticated connection, and must equal `hospitalId` in the envelope.
 
-Gateway routes source events to Patient service. The executable schema is [`envelope`](../packages/contracts/src/index.ts) plus the event-specific [`payloads`](../services/patient-service/src/patients.ts) validators. Patient owns its inbox, projections, clocks and audit in a private database. The envelope follows the assignment:
+Gateway routes source events to Patient service. The executable schema is [`envelope`](../packages/contracts/src/index.ts) plus the event-specific [`payloads`](../services/patient-service/src/patient/patient-events.ts) validators. Patient owns its inbox, projections, clocks and audit in a private database. The envelope follows the assignment:
 
 ```json
 {

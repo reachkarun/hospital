@@ -2,13 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync, readFileSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import { migrate } from "../scripts/migrate-monolith.js";
 import { Store as PatientStore } from "../services/patient-service/src/store.js";
 import { Store as ChargeStore } from "../services/charge-service/src/store.js";
 import { Store as BillingStore } from "../services/billing-service/src/store.js";
 import { seed } from "../services/patient-service/src/seed.js";
-import { save, submitCharges } from "../services/charge-service/src/charges.js";
+import {
+  save,
+  submitCharges,
+} from "../services/charge-service/src/charge/charge-operations.js";
 import { saveCharge, digest } from "@rounding/contracts";
 import { demoCredentials } from "@rounding/platform/config";
 
@@ -119,14 +122,34 @@ test("each project has its own build manifest and no cross-service implementatio
         `services/${service}/dist`,
       ),
     );
-    for (const file of readdirSync(join(directory, "src")).filter((f) =>
-      f.endsWith(".ts"),
-    )) {
-      const source = readFileSync(join(directory, "src", file), "utf8");
-      assert.doesNotMatch(
-        source,
-        /from\s+['"](?:\.\.\/|@rounding\/(?:patient-service|charge-service|billing-service|gateway|billing-mock))/,
-      );
+    const sourceRoot = join(directory, "src");
+    for (const file of readdirSync(sourceRoot, {
+      recursive: true,
+      encoding: "utf8",
+    }).filter((f) => f.endsWith(".ts"))) {
+      const sourcePath = join(sourceRoot, file);
+      const source = readFileSync(sourcePath, "utf8");
+      for (const match of source.matchAll(
+        /(?:from\s+|import\s*\()['"]([^'"]+)['"]/g,
+      )) {
+        const specifier = match[1]!;
+        assert.doesNotMatch(
+          specifier,
+          /^@rounding\/(?:patient-service|charge-service|billing-service|gateway|billing-mock)(?:\/|$)/,
+        );
+        if (specifier.startsWith(".")) {
+          const target = relative(
+            sourceRoot,
+            resolve(dirname(sourcePath), specifier),
+          );
+          assert.ok(
+            target !== ".." &&
+              !target.startsWith(`..${sep}`) &&
+              !isAbsolute(target),
+            `${sourcePath} imports outside its service: ${specifier}`,
+          );
+        }
+      }
     }
   }
 });

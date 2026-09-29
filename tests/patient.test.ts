@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Store } from "../services/patient-service/src/store.js";
 import { seed } from "../services/patient-service/src/seed.js";
-import { consume } from "../services/patient-service/src/patients.js";
+import { consume } from "../services/patient-service/src/patient/patient-events.js";
 import { sampleEvent } from "@rounding/contracts/sample";
 const hospital = "HOSP-001";
 function setup() {

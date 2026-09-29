@@ -14,6 +14,8 @@ Each project has a `package.json`, `tsconfig.json`, Dockerfile, entrypoint and R
 
 For a detailed presentation script, design explanations, failure scenarios, demo steps, and panel questions, see the [interview guide](docs/INTERVIEW_GUIDE.md).
 
+Each application uses **NestJS modules → controllers → services**, with Nest's standard Express adapter. Decorated modules register providers with Nest's dependency injection container, controllers handle HTTP validation and responses, and injectable service classes implement application workflows. Shared Nest guards, exception filters, and lifecycle hooks handle authentication, errors, and shutdown. See [code organization](docs/ARCHITECTURE.md#code-organization) for the folder layout and extension guidelines.
+
 ## Start with Docker
 
 For a new installation:

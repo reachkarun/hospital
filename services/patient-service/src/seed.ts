@@ -1,5 +1,5 @@
 import { Store } from "./store.js";
-import { consume } from "./patients.js";
+import { consume } from "./patient/patient-events.js";
 import { sampleEvent } from "@rounding/contracts/sample";
 export function seed(store: Store, billingUrl: string) {
   for (const [hospital, name] of [

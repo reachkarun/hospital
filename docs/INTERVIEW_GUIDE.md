@@ -74,15 +74,15 @@ Shared packages contain wire contracts and generic infrastructure. They do not c
 
 ## 4. Technology choices and their limits
 
-| Choice                                           | Explanation                                                                   | Trade-off                                                                                             |
-| ------------------------------------------------ | ----------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------- |
-| Node.js and TypeScript                           | Fits asynchronous HTTP integration; types clarify service contracts.          | TypeScript does not validate network input at runtime.                                                |
-| Fastify                                          | HTTP routing, hooks, request handling, and Swagger integration.               | Business rules must remain in domain code rather than only route handlers.                            |
-| Zod                                              | Runtime validation of client input and service contracts.                     | Schema validation alone cannot prove business authorization or billing correctness.                   |
-| SQLite per domain service                        | Simple persistent transactions, unique constraints, and portable local setup. | Synchronous access and single-writer limits make this unsuitable for unrestricted horizontal scaling. |
-| WAL, full synchronous writes, local transactions | Protect committed local state and make recovery practical.                    | They do not make transactions atomic across services or external billing.                             |
-| Docker Compose and named volumes                 | Reproducible startup, isolated services, persistent demo state.               | Compose is not a production high-availability platform.                                               |
-| Node test runner and real HTTP integration tests | Exercises state transitions and service boundaries.                           | This is not a load, penetration, or production chaos-testing program.                                 |
+| Choice                                           | Explanation                                                                                            | Trade-off                                                                                             |
+| ------------------------------------------------ | ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------- |
+| Node.js and TypeScript                           | Fits asynchronous HTTP integration; types clarify service contracts.                                   | TypeScript does not validate network input at runtime.                                                |
+| NestJS with Express                              | Decorated modules/controllers, dependency injection, guards, lifecycle hooks, and Swagger integration. | Business rules remain in injectable services and domain helpers.                                      |
+| Zod                                              | Runtime validation of client input and service contracts.                                              | Schema validation alone cannot prove business authorization or billing correctness.                   |
+| SQLite per domain service                        | Simple persistent transactions, unique constraints, and portable local setup.                          | Synchronous access and single-writer limits make this unsuitable for unrestricted horizontal scaling. |
+| WAL, full synchronous writes, local transactions | Protect committed local state and make recovery practical.                                             | They do not make transactions atomic across services or external billing.                             |
+| Docker Compose and named volumes                 | Reproducible startup, isolated services, persistent demo state.                                        | Compose is not a production high-availability platform.                                               |
+| Node test runner and real HTTP integration tests | Exercises state transitions and service boundaries.                                                    | This is not a load, penetration, or production chaos-testing program.                                 |
 
 Production storage could move to PostgreSQL per service, with appropriate locking, indexes, backups, and tenant controls. That migration is a proposal, not something already implemented.
 
@@ -244,7 +244,7 @@ Charge dispatch leases last 30 seconds; billing leases last 60 seconds; the bill
 
 Fencing protects local writes. It does not cancel a remote request already in flight. External idempotency is still necessary if a paused worker resumes after its lease expires.
 
-Graceful shutdown drains background work during the HTTP server's `preClose` phase before closing the database. A lifecycle test covers this ordering. A forced crash still relies on durable state and lease recovery.
+Graceful shutdown drains background work in Nest's `onModuleDestroy` hook and closes the database in `onApplicationShutdown`, after the HTTP server closes. A lifecycle test covers this ordering. A forced crash still relies on durable state and lease recovery.
 
 ## 12. Security, privacy, and audit
 
@@ -424,25 +424,25 @@ Clarify the billing reconciliation contract, production identity and tenant poli
 
 ## 18. Code navigation for a panel
 
-| Topic                                  | File                                                                             |
-| -------------------------------------- | -------------------------------------------------------------------------------- |
-| Original requirements                  | [TAKE_HOME_ASSIGNMENT.md](../TAKE_HOME_ASSIGNMENT.md)                            |
-| Component and data diagrams            | [ARCHITECTURE.md](ARCHITECTURE.md)                                               |
-| Public gateway                         | [gateway/src/app.ts](../services/gateway/src/app.ts)                             |
-| Patient deduplication and projections  | [patient-service/src/patients.ts](../services/patient-service/src/patients.ts)   |
-| Charge receipts, conflicts, submission | [charge-service/src/charges.ts](../services/charge-service/src/charges.ts)       |
-| Outbox delivery and result projection  | [charge-service/src/dispatcher.ts](../services/charge-service/src/dispatcher.ts) |
-| Billing job ingestion                  | [billing-service/src/app.ts](../services/billing-service/src/app.ts)             |
-| External retries and 23-hour cutoff    | [billing-service/src/worker.ts](../services/billing-service/src/worker.ts)       |
-| Per-item acknowledgment validation     | [contracts/src/billing.ts](../packages/contracts/src/billing.ts)                 |
-| Service wire contracts                 | [contracts/src/internal.ts](../packages/contracts/src/internal.ts)               |
-| Database transaction infrastructure    | [platform/src/db.ts](../packages/platform/src/db.ts)                             |
-| Background lifecycle                   | [platform/src/runtime.ts](../packages/platform/src/runtime.ts)                   |
-| External failure simulator             | [billing-mock/src/app.ts](../services/billing-mock/src/app.ts)                   |
-| Automated demonstration                | [scripts/demo.ts](../scripts/demo.ts)                                            |
-| Deployment                             | [compose.yaml](../compose.yaml)                                                  |
-| Migration design                       | [MIGRATION.md](MIGRATION.md)                                                     |
-| Test cases                             | [tests](../tests)                                                                |
+| Topic                                  | File                                                                                                         |
+| -------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Original requirements                  | [TAKE_HOME_ASSIGNMENT.md](../TAKE_HOME_ASSIGNMENT.md)                                                        |
+| Component and data diagrams            | [ARCHITECTURE.md](ARCHITECTURE.md)                                                                           |
+| Public gateway                         | [gateway/src/gateway/gateway.controller.ts](../services/gateway/src/gateway/gateway.controller.ts)           |
+| Patient deduplication and projections  | [patient-service/src/patient/patient-events.ts](../services/patient-service/src/patient/patient-events.ts)   |
+| Charge receipts, conflicts, submission | [charge-service/src/charge/charge-operations.ts](../services/charge-service/src/charge/charge-operations.ts) |
+| Outbox delivery and result projection  | [charge-service/src/dispatcher.ts](../services/charge-service/src/dispatcher.ts)                             |
+| Billing job ingestion                  | [billing-service/src/billing/billing-jobs.ts](../services/billing-service/src/billing/billing-jobs.ts)       |
+| External retries and 23-hour cutoff    | [billing-service/src/worker.ts](../services/billing-service/src/worker.ts)                                   |
+| Per-item acknowledgment validation     | [contracts/src/billing.ts](../packages/contracts/src/billing.ts)                                             |
+| Service wire contracts                 | [contracts/src/internal.ts](../packages/contracts/src/internal.ts)                                           |
+| Database transaction infrastructure    | [platform/src/db.ts](../packages/platform/src/db.ts)                                                         |
+| Background lifecycle                   | [platform/src/runtime.ts](../packages/platform/src/runtime.ts)                                               |
+| External failure simulator             | [billing-mock/src/mock/mock.service.ts](../services/billing-mock/src/mock/mock.service.ts)                   |
+| Automated demonstration                | [scripts/demo.ts](../scripts/demo.ts)                                                                        |
+| Deployment                             | [compose.yaml](../compose.yaml)                                                                              |
+| Migration design                       | [MIGRATION.md](MIGRATION.md)                                                                                 |
+| Test cases                             | [tests](../tests)                                                                                            |
 
 ## 19. Final preparation checklist
 

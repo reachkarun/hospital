@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { Store, timestamp, type Json } from "./store.js";
+import { Store, timestamp, type Json } from "../store.js";
 import {
   check,
   digest,

@@ -13,7 +13,7 @@ import { billingClient, Dispatcher } from "./dispatcher.js";
 const cfg = serviceConfig("charges", 3102);
 const store = new Store(cfg.database);
 if (cfg.demo) seedHospitals(store, cfg.billingUrl);
-const app = buildChargeApi(
+const app = await buildChargeApi(
   store,
   cfg.credentials,
   patientClient(

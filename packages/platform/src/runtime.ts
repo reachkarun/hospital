@@ -1,6 +1,7 @@
-import type { FastifyInstance } from "fastify";
+import type { INestApplication } from "@nestjs/common";
 import { config } from "./config.js";
 import type { Database } from "./db.js";
+import { ApplicationLifecycle } from "./lifecycle.js";
 
 export function serviceConfig(name: string, port: number) {
   const cfg = config();
@@ -31,41 +32,18 @@ export function seedHospitals(db: Database, billingUrl: string) {
     );
 }
 export function background(
-  app: FastifyInstance,
+  app: INestApplication,
   tick: () => Promise<unknown>,
   delay = 500,
 ) {
-  let running = true;
-  const task = (async () => {
-    while (running) {
-      try {
-        await tick();
-      } catch {
-        app.log.error(
-          { code: "BACKGROUND_TICK_FAILED" },
-          "Background task failed",
-        );
-      }
-      if (running) await new Promise((resolve) => setTimeout(resolve, delay));
-    }
-  })();
-  // Fastify onClose hooks run in reverse order. Drain background IO in preClose,
-  // before any onClose hook can close the service's database connection.
-  app.addHook("preClose", async () => {
-    running = false;
-    await task;
-  });
+  app.get(ApplicationLifecycle).start(tick, delay);
 }
 export async function listen(
-  app: FastifyInstance,
+  app: INestApplication,
   cfg: { host: string; port: number },
   db?: Database,
 ) {
-  // Background work has already drained in preClose before storage is closed.
-  if (db) app.addHook("onClose", async () => db.close());
-  for (const signal of ["SIGINT", "SIGTERM"] as const)
-    process.once(signal, () => {
-      void app.close();
-    });
-  await app.listen({ host: cfg.host, port: cfg.port });
+  if (db) app.get(ApplicationLifecycle).ownDatabase(db);
+  app.enableShutdownHooks(["SIGINT", "SIGTERM"]);
+  await app.listen(cfg.port, cfg.host);
 }

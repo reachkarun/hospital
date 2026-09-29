@@ -12,7 +12,7 @@ import { BillingWorker, HttpBilling } from "./worker.js";
 const cfg = serviceConfig("billing", 3103);
 const store = new Store(cfg.database);
 if (cfg.demo) seedHospitals(store, cfg.billingUrl);
-const app = buildBillingApi(
+const app = await buildBillingApi(
   store,
   cfg.credentials,
   secret("billing", cfg.demo),

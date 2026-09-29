@@ -2,6 +2,36 @@
 
 The backend is split by business ownership into independently deployed Gateway, Patient, Charge, and Billing services, with a separate external Billing mock. They use private databases, versioned HTTP contracts, and durable handoff records. Deploying one domain service does not require restarting the others.
 
+## Code organization
+
+All five applications run on NestJS with its standard Express adapter. Feature modules use `@Module`, HTTP controllers use `@Controller` and route decorators, and application services use `@Injectable`. Nest's dependency injection container constructs controllers and resolves each application's configured providers.
+
+For example, the Patient application is organized as follows:
+
+```text
+services/patient-service/src/
+  main.ts                       # Configuration, startup, background loop, shutdown
+  app.ts                        # Async Nest application factory
+  store.ts                      # Private database schema and storage primitives
+  seed.ts                       # Demo data
+  patient/
+    patient.module.ts           # Nest module, configured providers, controller registration
+    patient.controller.ts       # Routes, roles, request validation, HTTP responses
+    patient.service.ts          # Patient queries, encounter resolution, event workflows
+    patient-events.ts           # Event processing, ordering, deduplication, replay
+```
+
+Charge, Billing, Gateway, and the external billing mock follow the same layout in their `charge/`, `billing/`, `gateway/`, and `mock/` directories. Charge operations and billing job ingestion remain in focused domain helpers used by the service classes. The dispatcher and billing worker remain separate background components, managed by `main.ts` and the shared runtime lifecycle helpers.
+
+- **Modules** register configured providers through dynamic `register()` methods. Stores and external clients use value providers; injectable services use factory providers. Controllers receive services through `@Inject`. Dependencies are scoped to each Nest application container.
+- **Controllers** declare routes with Nest decorators, enforce endpoint roles, validate inputs using the existing Zod contracts, and map results to response codes and headers. Domain controllers contain no SQL or transaction orchestration. Explicit response codes preserve the API's existing 200, 202, and 207 semantics.
+- **Services** accept plain application data instead of HTTP request or response objects. They implement queries and workflows using the private store and domain helpers. Database queries currently live in services and domain helpers; `store.ts` provides schema and database primitives rather than a complete repository abstraction.
+- **Shared infrastructure** provides a Nest `PlatformModule` with a global authentication guard, exception filter, and controllers for health, identity, and audit. `@Internal` routes require service credentials and `@Public` marks health endpoints. Wire schemas remain in `packages/contracts`. Swagger UI and the aggregate schema use `@nestjs/swagger` at `/docs/` and `/docs/json`.
+
+Application factories are asynchronous and bootstrap with `NestFactory`. Startup awaits the factory before starting background work and listening. Nest's `onModuleDestroy` hook drains background tasks; `onApplicationShutdown` closes owned storage after HTTP shutdown. Signal handling uses `enableShutdownHooks`. Builds clear generated output first, and tests run the compiled JavaScript so TypeScript decorator metadata matches production.
+
+To add functionality, add a service method for the use case, expose it through a controller, and supply new dependencies through the feature module. For a separate feature within an application, add a sibling feature folder and register its controller in the application composition. Preserve each microservice's database ownership and communicate with other services through their versioned APIs. Test service behavior directly and use application-factory integration tests to verify HTTP contracts.
+
 ## Service diagram
 
 ```mermaid

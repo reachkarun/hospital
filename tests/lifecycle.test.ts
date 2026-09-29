@@ -1,11 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import Fastify from "fastify";
+import { Module } from "@nestjs/common";
+import { createApplication, PlatformModule } from "@rounding/platform/http";
 import { Database } from "@rounding/platform/db";
 import { background, listen } from "@rounding/platform/runtime";
 
+@Module({})
+class LifecycleTestModule {}
+
 test("graceful shutdown drains in-flight delivery before closing service storage", async () => {
-  const app = Fastify();
+  const app = await createApplication({
+    module: LifecycleTestModule,
+    imports: [PlatformModule.register({ service: "test", credentials: {} })],
+  });
   const db = new Database();
   let release!: () => void;
   const inFlight = new Promise<void>((resolve) => {

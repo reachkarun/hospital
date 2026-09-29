@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { Store, type Json } from "./store.js";
+import { Store, type Json } from "../store.js";
 import {
   check,
   digest,

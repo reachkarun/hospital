@@ -7,12 +7,12 @@ import {
 import { Store } from "./store.js";
 import { buildPatientApi } from "./app.js";
 import { seed } from "./seed.js";
-import { replayWaiting } from "./patients.js";
+import { replayWaiting } from "./patient/patient-events.js";
 
 const cfg = serviceConfig("patients", 3101);
 const store = new Store(cfg.database);
 if (cfg.demo) seed(store, cfg.billingUrl);
-const app = buildPatientApi(
+const app = await buildPatientApi(
   store,
   cfg.credentials,
   secret("patient", cfg.demo),

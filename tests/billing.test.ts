@@ -5,7 +5,7 @@ import {
   BillingWorker,
   type BillingTransport,
 } from "../services/billing-service/src/worker.js";
-import { receiveJob } from "../services/billing-service/src/app.js";
+import { receiveJob } from "../services/billing-service/src/billing/billing-jobs.js";
 import { seedHospitals } from "@rounding/platform/runtime";
 import type { Json } from "@rounding/platform/db";
 

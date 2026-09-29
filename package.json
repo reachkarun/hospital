@@ -7,10 +7,11 @@
     "node": ">=22.13.0"
   },
   "scripts": {
+    "prebuild": "node scripts/clean-build.mjs",
     "build:shared": "npm run build -w @rounding/contracts && npm run build -w @rounding/platform",
     "build": "npm run build:shared && npm run build -w @rounding/billing-mock -w @rounding/billing-service -w @rounding/charge-service -w @rounding/patient-service -w @rounding/gateway && tsc",
     "typecheck": "npm run build:shared && npm run typecheck --workspaces --if-present && tsc --noEmit",
-    "test": "npm run build && tsx --test tests/*.test.ts",
+    "test": "npm run build && node --test dist/tests/*.test.js",
     "demo:start": "npm run build && tsx scripts/start-demo.ts",
     "demo": "tsx scripts/demo.ts",
     "docker:up": "docker compose up --build -d",

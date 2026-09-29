@@ -1,3 +1,4 @@
+import { httpRequest } from "./http.js";
 import { test, type TestContext } from "node:test";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
@@ -45,34 +46,39 @@ async function fixture(t: TestContext) {
   const charge = new ChargeStore(join(directory, "charge.db"));
   const billing = new BillingStore(join(directory, "billing.db"));
   const mockStore = new Database();
-  const mock = buildMock(mockStore, "external-secret");
-  const mockUrl = await mock.listen({ host: "127.0.0.1", port: 0 });
+  const mock = await buildMock(mockStore, "external-secret");
+  await mock.listen(0, "127.0.0.1");
+  const mockUrl = await mock.getUrl();
   seed(patient, `${mockUrl}/api/v1`);
   seedHospitals(charge, `${mockUrl}/api/v1`);
   seedHospitals(billing, `${mockUrl}/api/v1`);
-  const patientApi = buildPatientApi(
+  const patientApi = await buildPatientApi(
     patient,
     demoCredentials,
     "patient-secret",
   );
-  const patientUrl = await patientApi.listen({ host: "127.0.0.1", port: 0 });
-  const billingApi = buildBillingApi(
+  await patientApi.listen(0, "127.0.0.1");
+  const patientUrl = await patientApi.getUrl();
+  const billingApi = await buildBillingApi(
     billing,
     demoCredentials,
     "billing-secret",
   );
-  const billingUrl = await billingApi.listen({ host: "127.0.0.1", port: 0 });
-  const chargeApi = buildChargeApi(
+  await billingApi.listen(0, "127.0.0.1");
+  const billingUrl = await billingApi.getUrl();
+  const chargeApi = await buildChargeApi(
     charge,
     demoCredentials,
     patientClient(patientUrl, "patient-secret"),
   );
-  const chargeUrl = await chargeApi.listen({ host: "127.0.0.1", port: 0 });
-  const gateway = buildGateway(demoCredentials, {
+  await chargeApi.listen(0, "127.0.0.1");
+  const chargeUrl = await chargeApi.getUrl();
+  const gateway = await buildGateway(demoCredentials, {
     patient: patientUrl,
     charge: chargeUrl,
     billing: billingUrl,
   });
+  await gateway.listen(0, "127.0.0.1");
   let time = Date.now();
   const jobs = billingClient(billingUrl, "billing-secret");
   const dispatcher = new Dispatcher(charge, jobs, () => time);
@@ -94,7 +100,7 @@ async function fixture(t: TestContext) {
     payload?: Json,
     token = "demo-provider-one",
   ) =>
-    gateway.inject({
+    httpRequest(gateway, {
       method: payload === undefined ? "GET" : "POST",
       url,
       headers: { authorization: `Bearer ${token}` },
@@ -146,7 +152,7 @@ test("separate databases, service auth, gateway routing, and Swagger request exa
   );
   assert.equal(
     (
-      await f.patientApi.inject({
+      await httpRequest(f.patientApi, {
         method: "POST",
         url: "/internal/v1/encounters/resolve",
         payload: {
@@ -159,14 +165,14 @@ test("separate databases, service auth, gateway routing, and Swagger request exa
     ).statusCode,
     401,
   );
-  assert.equal((await f.gateway.inject("/v1/patients")).statusCode, 401);
+  assert.equal((await httpRequest(f.gateway, "/v1/patients")).statusCode, 401);
   assert.equal((await f.request("/internal/v1/jobs")).statusCode, 404);
-  assert.equal((await f.gateway.inject("/docs/")).statusCode, 200);
+  assert.equal((await httpRequest(f.gateway, "/docs/")).statusCode, 200);
   assert.equal(
-    (await f.gateway.inject("/docs/static/swagger-ui-bundle.js")).statusCode,
+    (await httpRequest(f.gateway, "/docs/swagger-ui-bundle.js")).statusCode,
     200,
   );
-  const doc = (await f.gateway.inject("/docs/json")).json();
+  const doc = (await httpRequest(f.gateway, "/docs/json")).json();
   assert.equal(doc.components.securitySchemes.bearerAuth.scheme, "bearer");
   assert.equal(
     (

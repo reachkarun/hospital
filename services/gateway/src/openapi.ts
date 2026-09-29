@@ -1,11 +1,10 @@
-import swagger from "@fastify/swagger";
-import swaggerUi from "@fastify/swagger-ui";
-import type { FastifyInstance } from "fastify";
+import { SwaggerModule, type OpenAPIObject } from "@nestjs/swagger";
+import type { INestApplication } from "@nestjs/common";
 import { zodToJsonSchema } from "zod-to-json-schema";
 import { envelope, saveCharge, submit, syncBatch } from "@rounding/contracts";
 import { sampleEvent } from "@rounding/contracts/sample";
 
-export function registerDocumentation(app: FastifyInstance) {
+export function registerDocumentation(app: INestApplication) {
   const draft = {
     operationId: "swagger-save-001",
     chargeId: "swagger-charge-001",
@@ -239,33 +238,27 @@ export function registerDocumentation(app: FastifyInstance) {
     "Administration",
     { role: "admin" },
   );
-  app.register(swagger, {
-    mode: "static",
-    specification: {
-      document: {
-        openapi: "3.0.3",
-        info: {
-          title: "Rounding App API",
-          version: "1.0.0",
-          description:
-            "Use Authorize to enter a bearer token (without the Bearer prefix). Demo provider: demo-provider-one; integration: demo-integration-one; admin: demo-admin-one. Start with GET /v1/me or GET /v1/patients. Create a draft, submit its charge ID, then poll the returned submission ID. Use new operation/charge/batch IDs for a new workflow; identical IDs intentionally replay earlier results. Demo tokens apply only in demo mode.",
-        },
-        servers: [{ url: "/", description: "This running API" }],
-        components: {
-          securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
-        },
-        security: [{ bearerAuth: [] }],
-        paths,
-      },
+  const document: OpenAPIObject = {
+    openapi: "3.0.3",
+    info: {
+      title: "Rounding App API",
+      version: "1.0.0",
+      description:
+        "Use Authorize to enter a bearer token (without the Bearer prefix). Demo provider: demo-provider-one; integration: demo-integration-one; admin: demo-admin-one. Start with GET /v1/me or GET /v1/patients. Create a draft, submit its charge ID, then poll the returned submission ID. Use new operation/charge/batch IDs for a new workflow; identical IDs intentionally replay earlier results. Demo tokens apply only in demo mode.",
     },
-  });
-  app.register(swaggerUi, {
-    routePrefix: "/docs",
-    uiConfig: {
+    servers: [{ url: "/", description: "This running API" }],
+    components: {
+      securitySchemes: { bearerAuth: { type: "http", scheme: "bearer" } },
+    },
+    security: [{ bearerAuth: [] }],
+    paths,
+  };
+  SwaggerModule.setup("docs", app, document, {
+    jsonDocumentUrl: "docs/json",
+    swaggerOptions: {
       docExpansion: "list",
       deepLinking: true,
       persistAuthorization: false,
     },
-    staticCSP: true,
   });
 }
