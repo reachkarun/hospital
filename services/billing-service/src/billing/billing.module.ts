@@ -2,10 +2,8 @@ import { Module, type DynamicModule } from "@nestjs/common";
 import { PlatformModule } from "@rounding/platform/http";
 import type { Credentials } from "@rounding/platform/config";
 import { Store } from "../store.js";
-
 import { BillingController } from "./billing.controller.js";
 import { BillingService } from "./billing.service.js";
-
 @Module({})
 export class BillingModule {
   static register(

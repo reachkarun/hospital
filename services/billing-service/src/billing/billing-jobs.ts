@@ -16,12 +16,13 @@ export function state(row: Json) {
     acknowledgment: row.response ? JSON.parse(row.response) : null,
   };
 }
-export function receiveJob(store: Store, raw: unknown) {
+export async function receiveJob(store: Store, raw: unknown) {
   const payload = billingRequest.parse(raw);
-  return store.transaction(() => {
+  return await store.transaction(async () => {
+    await store.lockHospital(payload.hospitalId);
     const hash = digest(payload);
-    const old = store.get(
-      "SELECT * FROM submissions WHERE hospital=? AND id=?",
+    const old = await store.get(
+      "SELECT * FROM billing_submissions WHERE hospital=? AND id=?",
       payload.hospitalId,
       payload.submissionId,
     );
@@ -30,19 +31,22 @@ export function receiveJob(store: Store, raw: unknown) {
       return state(old);
     }
     check(
-      store.get("SELECT id FROM hospitals WHERE id=?", payload.hospitalId),
+      await store.get(
+        "SELECT id FROM hospitals WHERE id=?",
+        payload.hospitalId,
+      ),
       404,
       "HOSPITAL_NOT_FOUND",
     );
-    const key = store.get(
-      "SELECT id FROM submissions WHERE hospital=? AND provider=? AND client_key=?",
+    const key = await store.get(
+      "SELECT id FROM billing_submissions WHERE hospital=? AND provider=? AND client_key=?",
       payload.hospitalId,
       payload.providerId,
       payload.clientSubmissionId,
     );
     check(!key, 409, "BILLING_KEY_REUSED");
-    store.run(
-      "INSERT INTO submissions(hospital,id,provider,client_key,digest,payload,status) VALUES (?,?,?,?,?,?,'QUEUED')",
+    await store.run(
+      "INSERT INTO billing_submissions(hospital,id,provider,client_key,digest,payload,status) VALUES (?,?,?,?,?,?,'QUEUED')",
       payload.hospitalId,
       payload.submissionId,
       payload.providerId,
@@ -50,18 +54,18 @@ export function receiveJob(store: Store, raw: unknown) {
       hash,
       JSON.stringify(payload),
     );
-    store.audit(
+    await store.audit(
       payload.hospitalId,
       "charge-service",
       "BILLING_JOB_RECEIVED",
       payload.submissionId,
     );
     return state(
-      store.get(
-        "SELECT * FROM submissions WHERE hospital=? AND id=?",
+      (await store.get(
+        "SELECT * FROM billing_submissions WHERE hospital=? AND id=?",
         payload.hospitalId,
         payload.submissionId,
-      )!,
+      ))!,
     );
   });
 }

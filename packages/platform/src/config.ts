@@ -1,5 +1,31 @@
 import { z } from "zod";
+import { existsSync } from "node:fs";
+import { loadEnvFile } from "node:process";
+import { fileURLToPath } from "node:url";
 import type { Principal } from "@rounding/contracts";
+
+const envFile = new URL("../../../.env", import.meta.url);
+if (existsSync(envFile)) loadEnvFile(fileURLToPath(envFile));
+
+const databaseSchema = z.object({
+  host: z.string().min(1),
+  port: z.coerce.number().int().min(1).max(65535),
+  user: z.string().min(1),
+  password: z.string().min(1),
+  database: z.string().regex(/^[a-zA-Z0-9_]+$/),
+  connectionLimit: z.coerce.number().int().min(1).max(100),
+});
+export type DatabaseConfig = z.infer<typeof databaseSchema>;
+export function databaseConfig(): DatabaseConfig {
+  return databaseSchema.parse({
+    host: process.env.DB_HOST ?? "127.0.0.1",
+    port: process.env.DB_PORT ?? 3306,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASSWORD,
+    database: process.env.DB_NAME ?? "rounding_app",
+    connectionLimit: process.env.DB_POOL_SIZE ?? 10,
+  });
+}
 
 export type Credentials = Record<string, Principal>;
 export const demoCredentials: Credentials = {
@@ -51,7 +77,6 @@ export function config() {
     demo,
     credentials,
     billingToken,
-    database: process.env.DATABASE_PATH ?? "data/rounding.db",
     billingUrl: process.env.BILLING_URL ?? "http://127.0.0.1:4001/api/v1",
     port: Number(process.env.PORT ?? 3000),
     host: process.env.HOST ?? "127.0.0.1",

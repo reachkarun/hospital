@@ -6,12 +6,10 @@ import {
 } from "@rounding/platform/runtime";
 import { Store } from "./store.js";
 import { buildPatientApi } from "./app.js";
-import { seed } from "./seed.js";
 import { replayWaiting } from "./patient/patient-events.js";
-
 const cfg = serviceConfig("patients", 3101);
-const store = new Store(cfg.database);
-if (cfg.demo) seed(store, cfg.billingUrl);
+const store = new Store();
+await store.connect();
 const app = await buildPatientApi(
   store,
   cfg.credentials,
@@ -20,8 +18,8 @@ const app = await buildPatientApi(
 background(
   app,
   async () => {
-    for (const h of store.all("SELECT id FROM hospitals"))
-      replayWaiting(store, h.id);
+    for (const h of await store.all("SELECT id FROM hospitals"))
+      await replayWaiting(store, h.id);
   },
   1000,
 );

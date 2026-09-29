@@ -22,18 +22,23 @@ export class AuthenticationGuard implements CanActivate {
   private readonly keys;
   private readonly buckets = new Map<
     Principal,
-    { start: number; count: number }
+    {
+      start: number;
+      count: number;
+    }
   >();
   constructor(
-    @Inject(HTTP_OPTIONS) private readonly options: HttpOptions,
-    @Inject(Reflector) private readonly reflector: Reflector,
+    @Inject(HTTP_OPTIONS)
+    private readonly options: HttpOptions,
+    @Inject(Reflector)
+    private readonly reflector: Reflector,
   ) {
     this.keys = Object.entries(options.credentials).map(([token, p]) => ({
       hash: hash(token),
       p,
     }));
   }
-  canActivate(context: ExecutionContext) {
+  async canActivate(context: ExecutionContext) {
     const targets = [context.getHandler(), context.getClass()];
     if (this.reflector.getAllAndOverride<boolean>(PUBLIC, targets)) return true;
     const req = context.switchToHttp().getRequest<AuthenticatedRequest>();
@@ -67,7 +72,7 @@ export class AuthenticationGuard implements CanActivate {
     check(p, 401, "UNAUTHORIZED");
     if (this.options.database)
       check(
-        this.options.database.get(
+        await this.options.database.get(
           "SELECT id FROM hospitals WHERE id=?",
           p.hospital,
         ),
@@ -76,7 +81,7 @@ export class AuthenticationGuard implements CanActivate {
       );
     const now = Date.now();
     const bucket = this.buckets.get(p);
-    if (!bucket || now - bucket.start >= 60_000)
+    if (!bucket || now - bucket.start >= 60000)
       this.buckets.set(p, { start: now, count: 1 });
     else if (++bucket.count > (this.options.rateLimit ?? 240)) {
       context
@@ -84,7 +89,7 @@ export class AuthenticationGuard implements CanActivate {
         .getResponse<Response>()
         .setHeader(
           "retry-after",
-          Math.ceil((60_000 - now + bucket.start) / 1000),
+          Math.ceil((60000 - now + bucket.start) / 1000),
         );
       throw new DomainError(429, "RATE_LIMITED");
     }

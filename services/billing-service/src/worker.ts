@@ -1,7 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { Store, type Json } from "./store.js";
-
 export type BillingResponse = {
   status: number;
   body: Json;
@@ -19,7 +18,6 @@ export interface BillingTransport {
     submissionId: string,
   ): Promise<BillingResponse>;
 }
-
 export class HttpBilling implements BillingTransport {
   constructor(
     private readonly token: string,
@@ -53,7 +51,7 @@ export class HttpBilling implements BillingTransport {
         const chunk = await reader.read();
         if (chunk.done) break;
         size += chunk.value.byteLength;
-        if (size > 1_048_576) {
+        if (size > 1048576) {
           await reader.cancel();
           throw new Error("BILLING_RESPONSE_TOO_LARGE");
         }
@@ -94,9 +92,7 @@ export class HttpBilling implements BillingTransport {
     );
   }
 }
-
 import { validateAck } from "@rounding/contracts/billing";
-
 export class BillingWorker {
   constructor(
     private store: Store,
@@ -104,28 +100,27 @@ export class BillingWorker {
     private clock: () => number = Date.now,
     private random: () => number = Math.random,
   ) {}
-
-  private claim(): Json | undefined {
+  private async claim(): Promise<Json | undefined> {
     const now = this.clock();
-    return this.store.transaction(() => {
-      const row = this.store.get(
-        `SELECT s.*,h.billing_url FROM submissions s JOIN hospitals h ON h.id=s.hospital
+    return await this.store.transaction(async () => {
+      const row = await this.store.get(
+        `SELECT s.*,h.billing_url FROM billing_submissions s JOIN hospitals h ON h.id=s.hospital
         WHERE (s.status IN ('QUEUED','RETRY') AND s.next_at<=?) OR (s.status='SENDING' AND s.lease_until<=?)
-        ORDER BY s.next_at,s.id LIMIT 1`,
+        ORDER BY s.next_at,s.id LIMIT 1 FOR UPDATE SKIP LOCKED`,
         now,
         now,
       );
       if (!row) return;
       const token = randomUUID();
-      this.store.run(
-        `UPDATE submissions SET status='SENDING',attempts=attempts+1,lease_token=?,lease_until=?,first_attempt=COALESCE(first_attempt,?) WHERE hospital=? AND id=?`,
+      await this.store.run(
+        `UPDATE billing_submissions SET status='SENDING',attempts=attempts+1,lease_token=?,lease_until=?,first_attempt=COALESCE(first_attempt,?) WHERE hospital=? AND id=?`,
         token,
-        now + 60_000,
+        now + 60000,
         now,
         row.hospital,
         row.id,
       );
-      this.store.audit(
+      await this.store.audit(
         row.hospital,
         "billing-worker",
         "BILLING_ATTEMPT",
@@ -139,23 +134,22 @@ export class BillingWorker {
       };
     });
   }
-
-  private finish(
+  private async finish(
     row: Json,
     status: string,
     error: string | null,
     ack: Json | null = null,
     delay = 0,
   ) {
-    this.store.transaction(() => {
-      const current = this.store.get(
-        "SELECT lease_token FROM submissions WHERE hospital=? AND id=?",
+    await this.store.transaction(async () => {
+      const current = await this.store.get(
+        "SELECT lease_token FROM billing_submissions WHERE hospital=? AND id=? FOR UPDATE",
         row.hospital,
         row.id,
       );
       if (current?.lease_token !== row.lease_token) return; // Fencing: expired worker cannot commit.
-      this.store.run(
-        "UPDATE submissions SET status=?,error=?,response=?,next_at=?,lease_until=0,lease_token=NULL WHERE hospital=? AND id=?",
+      await this.store.run(
+        "UPDATE billing_submissions SET status=?,error=?,response=?,next_at=?,lease_until=0,lease_token=NULL WHERE hospital=? AND id=?",
         status,
         error,
         ack ? JSON.stringify(ack) : null,
@@ -163,7 +157,7 @@ export class BillingWorker {
         row.hospital,
         row.id,
       );
-      this.store.audit(
+      await this.store.audit(
         row.hospital,
         "billing-worker",
         `BILLING_${status}`,
@@ -171,14 +165,13 @@ export class BillingWorker {
       );
     });
   }
-
-  private retry(row: Json, code: string, retryAfter?: number) {
+  private async retry(row: Json, code: string, retryAfter?: number) {
     if (row.attempts >= 10) {
-      this.finish(row, "REVIEW", "RETRY_LIMIT_REACHED");
+      await this.finish(row, "REVIEW", "RETRY_LIMIT_REACHED");
       return;
     }
-    const backoff = Math.min(30_000, 1000 * 2 ** Math.min(row.attempts - 1, 5));
-    this.finish(
+    const backoff = Math.min(30000, 1000 * 2 ** Math.min(row.attempts - 1, 5));
+    await this.finish(
       row,
       "RETRY",
       code,
@@ -186,10 +179,9 @@ export class BillingWorker {
       Math.max(retryAfter ?? 0, backoff + Math.floor(this.random() * 500)),
     );
   }
-
   /** One leased job; no network IO inside a database transaction. */
   async tick(): Promise<boolean> {
-    const row = this.claim();
+    const row = await this.claim();
     if (!row) return false;
     try {
       if (row.attempts > 1) {
@@ -201,21 +193,25 @@ export class BillingWorker {
         if (lookup.status === 200) {
           const ack = validateAck(lookup.body, row);
           if (ack) {
-            this.finish(row, ack.status, null, ack);
+            await this.finish(row, ack.status, null, ack);
             return true;
           }
           // The assignment's lookup may return only a summary. Within the window,
           // replay retrieves the original per-item acknowledgment with the same key.
         }
         if (![200, 404].includes(lookup.status)) {
-          this.retry(row, "RECONCILIATION_UNAVAILABLE", lookup.retryAfter);
+          await this.retry(
+            row,
+            "RECONCILIATION_UNAVAILABLE",
+            lookup.retryAfter,
+          );
           return true;
         }
       }
       // Conservative margin before the external 24-hour deduplication expiry.
       // Even a 404 cannot prove an earlier timed-out request did not commit.
       if (this.clock() - row.first_attempt >= 23 * 60 * 60 * 1000) {
-        this.finish(row, "REVIEW", "IDEMPOTENCY_WINDOW_EXPIRED");
+        await this.finish(row, "REVIEW", "IDEMPOTENCY_WINDOW_EXPIRED");
         return true;
       }
       const response = await this.transport.submit(
@@ -225,16 +221,24 @@ export class BillingWorker {
       );
       if (response.status === 200) {
         const ack = validateAck(response.body, row);
-        if (ack) this.finish(row, ack.status, null, ack);
-        else this.retry(row, "INVALID_BILLING_ACK");
+        if (ack) await this.finish(row, ack.status, null, ack);
+        else await this.retry(row, "INVALID_BILLING_ACK");
       } else if (response.status === 400)
-        this.finish(row, "FAILED", "BILLING_VALIDATION_ERROR");
+        await this.finish(row, "FAILED", "BILLING_VALIDATION_ERROR");
       else if (response.status === 429 || response.status >= 500)
-        this.retry(row, "BILLING_TEMPORARILY_UNAVAILABLE", response.retryAfter);
+        await this.retry(
+          row,
+          "BILLING_TEMPORARILY_UNAVAILABLE",
+          response.retryAfter,
+        );
       else
-        this.finish(row, "REVIEW", "BILLING_CONFIGURATION_OR_PROTOCOL_ERROR");
+        await this.finish(
+          row,
+          "REVIEW",
+          "BILLING_CONFIGURATION_OR_PROTOCOL_ERROR",
+        );
     } catch {
-      this.retry(row, "BILLING_NETWORK_ERROR");
+      await this.retry(row, "BILLING_NETWORK_ERROR");
     }
     return true;
   }

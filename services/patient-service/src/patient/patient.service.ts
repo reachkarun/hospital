@@ -10,59 +10,75 @@ import { consume, assigned, replayWaiting } from "./patient-events.js";
 @Injectable()
 export class PatientService {
   constructor(private readonly store: Store) {}
-  list(p: Principal, q: { after: string; limit: number }) {
+  async list(
+    p: Principal,
+    q: {
+      after: string;
+      limit: number;
+    },
+  ) {
     const { store } = this;
-    const rows = store.all(
-      `SELECT DISTINCT e.id,e.body FROM entities e JOIN entities a ON a.hospital=e.hospital AND a.kind='assignment' AND json_extract(a.body,'$.patientId')=e.id
-      WHERE e.hospital=? AND e.kind='patient' AND json_extract(a.body,'$.providerId')=? AND json_extract(a.body,'$.active')=1 AND e.id>? ORDER BY e.id LIMIT ?`,
+    const rows = await store.all(
+      `SELECT DISTINCT e.id,e.body FROM patient_entities e JOIN patient_entities a ON a.hospital=e.hospital AND a.kind='assignment' AND JSON_UNQUOTE(JSON_EXTRACT(a.body,'$.patientId'))=e.id
+      WHERE e.hospital=? AND e.kind='patient' AND JSON_UNQUOTE(JSON_EXTRACT(a.body,'$.providerId'))=? AND JSON_UNQUOTE(JSON_EXTRACT(a.body,'$.active'))='true' AND e.id>? ORDER BY e.id LIMIT ?`,
       p.hospital,
       p.provider,
       q.after,
       q.limit,
     );
-    store.audit(p.hospital, p.provider, "PATIENT_LIST_READ", "patient-list");
+    await store.audit(
+      p.hospital,
+      p.provider,
+      "PATIENT_LIST_READ",
+      "patient-list",
+    );
     return {
       items: rows.map((row) => JSON.parse(row.body)),
       nextCursor: rows.length === q.limit ? rows.at(-1)!.id : null,
     };
   }
-  visit(p: Principal, identifier: string) {
+  async visit(p: Principal, identifier: string) {
     const { store } = this;
-    const visit = store.entity(p.hospital, "visit", identifier);
+    const visit = await store.entity(p.hospital, "visit", identifier);
     check(
-      visit && assigned(store, p.hospital, p.provider, identifier, true),
+      visit &&
+        (await assigned(store, p.hospital, p.provider, identifier, true)),
       404,
       "VISIT_NOT_FOUND",
     );
-    store.audit(p.hospital, p.provider, "VISIT_READ", identifier);
+    await store.audit(p.hospital, p.provider, "VISIT_READ", identifier);
     return {
       ...visit,
-      patient: store.entity(p.hospital, "patient", visit.patientId),
+      patient: await store.entity(p.hospital, "patient", visit.patientId),
     };
   }
-  resolveEncounter(input: z.infer<typeof encounterRequest>) {
+  async resolveEncounter(input: z.infer<typeof encounterRequest>) {
     const { store } = this;
-    const visit = store.entity(input.hospitalId, "visit", input.visitId);
+    const visit = await store.entity(input.hospitalId, "visit", input.visitId);
     check(
       visit &&
-        assigned(
+        (await assigned(
           store,
           input.hospitalId,
           input.providerId,
           input.visitId,
           true,
-        ),
+        )),
       404,
       "VISIT_NOT_FOUND",
     );
-    const patient = store.entity(input.hospitalId, "patient", visit.patientId);
-    const provider = store.entity(
+    const patient = await store.entity(
+      input.hospitalId,
+      "patient",
+      visit.patientId,
+    );
+    const provider = await store.entity(
       input.hospitalId,
       "provider",
       input.providerId,
     );
     check(patient?.mrn && provider?.npi, 422, "BILLING_IDENTIFIERS_MISSING");
-    store.audit(
+    await store.audit(
       input.hospitalId,
       input.providerId,
       "ENCOUNTER_RESOLVED_FOR_CHARGE",
@@ -77,28 +93,34 @@ export class PatientService {
       ...(visit.dischargeDate ? { dischargeDate: visit.dischargeDate } : {}),
     });
   }
-  inbox(p: Principal, q: { after: number; limit: number }) {
+  async inbox(
+    p: Principal,
+    q: {
+      after: number;
+      limit: number;
+    },
+  ) {
     const { store } = this;
-    store.audit(p.hospital, p.provider, "INBOX_READ", "inbox");
+    await store.audit(p.hospital, p.provider, "INBOX_READ", "inbox");
     return {
-      items: store.all(
-        "SELECT rowid AS cursor,id,status,error,received_at FROM inbox WHERE hospital=? AND rowid>? ORDER BY rowid LIMIT ?",
+      items: await store.all(
+        "SELECT sequence AS `cursor`,id,status,error,received_at FROM patient_inbox WHERE hospital=? AND sequence>? ORDER BY sequence LIMIT ?",
         p.hospital,
         q.after,
         q.limit,
       ),
     };
   }
-  consume(hospital: string, body: unknown) {
-    return consume(this.store, hospital, body);
+  async consume(hospital: string, body: unknown) {
+    return await consume(this.store, hospital, body);
   }
-  replay(hospital: string) {
-    return { results: replayWaiting(this.store, hospital) };
+  async replay(hospital: string) {
+    return { results: await replayWaiting(this.store, hospital) };
   }
-  metrics(hospital: string) {
+  async metrics(hospital: string) {
     return {
-      events: this.store.all(
-        "SELECT status,COUNT(*) AS count FROM inbox WHERE hospital=? GROUP BY status",
+      events: await this.store.all(
+        "SELECT status,COUNT(*) AS count FROM patient_inbox WHERE hospital=? GROUP BY status",
         hospital,
       ),
     };

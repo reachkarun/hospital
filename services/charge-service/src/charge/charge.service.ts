@@ -23,53 +23,64 @@ export class ChargeService {
     private readonly store: Store,
     private readonly resolve: ResolveEncounter,
   ) {}
-  list(p: Principal, q: { after: string; limit: number }) {
+  async list(
+    p: Principal,
+    q: {
+      after: string;
+      limit: number;
+    },
+  ) {
     const { store } = this;
-    const rows = store.all(
+    const rows = await store.all(
       "SELECT * FROM charges WHERE hospital=? AND provider=? AND id>? ORDER BY id LIMIT ?",
       p.hospital,
       p.provider,
       q.after,
       q.limit,
     );
-    store.audit(p.hospital, p.provider, "CHARGE_LIST_READ", "charge-list");
+    await store.audit(
+      p.hospital,
+      p.provider,
+      "CHARGE_LIST_READ",
+      "charge-list",
+    );
     return {
       items: rows.map(viewCharge),
       nextCursor: rows.length === q.limit ? rows.at(-1)!.id : null,
     };
   }
-  get(p: Principal, identifier: string) {
+  async get(p: Principal, identifier: string) {
     const { store } = this;
-    const row = store.get(
+    const row = await store.get(
       "SELECT * FROM charges WHERE hospital=? AND provider=? AND id=?",
       p.hospital,
       p.provider,
       identifier,
     );
     check(row, 404, "CHARGE_NOT_FOUND");
-    store.audit(p.hospital, p.provider, "CHARGE_READ", identifier);
+    await store.audit(p.hospital, p.provider, "CHARGE_READ", identifier);
     return viewCharge(row);
   }
-  submission(p: Principal, identifier: string) {
+  async submission(p: Principal, identifier: string) {
     const { store } = this;
-    const row = store.get(
-      "SELECT * FROM submissions WHERE hospital=? AND provider=? AND id=?",
+    const row = await store.get(
+      "SELECT * FROM charge_submissions WHERE hospital=? AND provider=? AND id=?",
       p.hospital,
       p.provider,
       identifier,
     );
     check(row, 404, "SUBMISSION_NOT_FOUND");
-    store.audit(p.hospital, p.provider, "SUBMISSION_READ", identifier);
+    await store.audit(p.hospital, p.provider, "SUBMISSION_READ", identifier);
     return submissionView(row);
   }
-  save(p: Principal, input: z.infer<typeof saveCharge>) {
-    return save(this.store, p, input, this.resolve);
+  async save(p: Principal, input: z.infer<typeof saveCharge>) {
+    return await save(this.store, p, input, this.resolve);
   }
-  submit(p: Principal, input: z.infer<typeof submit>) {
-    return submitCharges(this.store, p, input, this.resolve);
+  async submit(p: Principal, input: z.infer<typeof submit>) {
+    return await submitCharges(this.store, p, input, this.resolve);
   }
-  retry(p: Principal, identifier: string) {
-    return retrySubmission(this.store, p, identifier);
+  async retry(p: Principal, identifier: string) {
+    return await retrySubmission(this.store, p, identifier);
   }
   async sync(p: Principal, batch: z.infer<typeof syncBatch>) {
     const results = [];
@@ -92,10 +103,10 @@ export class ChargeService {
     }
     return { results };
   }
-  metrics(hospital: string) {
+  async metrics(hospital: string) {
     return {
-      submissions: this.store.all(
-        "SELECT status,COUNT(*) AS count FROM submissions WHERE hospital=? GROUP BY status",
+      submissions: await this.store.all(
+        "SELECT status,COUNT(*) AS count FROM charge_submissions WHERE hospital=? GROUP BY status",
         hospital,
       ),
     };

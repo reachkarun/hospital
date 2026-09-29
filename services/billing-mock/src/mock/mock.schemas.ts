@@ -15,7 +15,6 @@ export const requestSchema = z.object({
     .min(1)
     .max(100),
 });
-
 export const modeSchema = z.object({
   hospitalId: id,
   mode: z.enum(["healthy", "outage", "rate-limit", "lost-ack"]),

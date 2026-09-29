@@ -1,40 +1,124 @@
-import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname } from "node:path";
+import { AsyncLocalStorage } from "node:async_hooks";
+import {
+  createPool,
+  type Pool,
+  type PoolConnection,
+  type ResultSetHeader,
+  type RowDataPacket,
+} from "mysql2/promise";
+import { check } from "@rounding/contracts";
+import { databaseConfig, type DatabaseConfig } from "./config.js";
 
 export const timestamp = () => new Date().toISOString();
 export type Json = Record<string, any>;
+type SqlValue = string | number | null;
 
+/** MySQL access only. Database structure is provisioned explicitly with database/schema.sql. */
 export class Database {
-  readonly db: DatabaseSync;
-  constructor(path = ":memory:") {
-    if (path !== ":memory:") mkdirSync(dirname(path), { recursive: true });
-    this.db = new DatabaseSync(path);
-    this.db.exec(COMMON_SCHEMA);
+  private readonly pool: Pool;
+  private readonly transactions = new AsyncLocalStorage<PoolConnection>();
+  private closing?: Promise<void>;
+
+  constructor(
+    options: DatabaseConfig = databaseConfig(),
+    readonly service = "platform",
+  ) {
+    this.pool = createPool({
+      ...options,
+      waitForConnections: true,
+      queueLimit: 100,
+      timezone: "Z",
+      charset: "utf8mb4_bin",
+      jsonStrings: true,
+      supportBigNumbers: true,
+      bigNumberStrings: false,
+      multipleStatements: false,
+      connectTimeout: 10_000,
+    });
   }
-  transaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN IMMEDIATE");
+
+  async connect() {
     try {
-      const result = fn();
-      this.db.exec("COMMIT");
-      return result;
+      await this.get("SELECT 1");
     } catch (error) {
-      this.db.exec("ROLLBACK");
+      await this.close();
       throw error;
     }
   }
-  get(sql: string, ...args: (string | number | null)[]): Json | undefined {
-    return this.db.prepare(sql).get(...args) as Json | undefined;
+
+  async transaction<T>(fn: () => T | Promise<T>): Promise<T> {
+    if (this.transactions.getStore())
+      throw new Error("Nested transactions must use explicit savepoints");
+    for (let attempt = 0; ; attempt++) {
+      const connection = await this.pool.getConnection();
+      try {
+        await connection.query(
+          "SET TRANSACTION ISOLATION LEVEL READ COMMITTED",
+        );
+        await connection.beginTransaction();
+        const result = await this.transactions.run(connection, fn);
+        await connection.commit();
+        return result;
+      } catch (error) {
+        await connection.rollback();
+        const code = (error as { code?: string }).code;
+        if (
+          attempt >= 2 ||
+          !["ER_LOCK_DEADLOCK", "ER_LOCK_WAIT_TIMEOUT"].includes(code ?? "")
+        )
+          throw error;
+      } finally {
+        connection.release();
+      }
+    }
   }
-  all(sql: string, ...args: (string | number | null)[]): Json[] {
-    return this.db.prepare(sql).all(...args) as Json[];
+
+  /** Serialize related writes, including missing-row/idempotency checks, across service instances. */
+  async lockHospital(hospital: string) {
+    if (!this.transactions.getStore())
+      throw new Error("Hospital locks require a transaction");
+    check(
+      await this.get(
+        "SELECT id FROM hospitals WHERE id=? FOR UPDATE",
+        hospital,
+      ),
+      404,
+      "HOSPITAL_NOT_FOUND",
+    );
   }
-  run(sql: string, ...args: (string | number | null)[]) {
-    return this.db.prepare(sql).run(...args);
+
+  async get(sql: string, ...args: SqlValue[]): Promise<Json | undefined> {
+    return (await this.all(sql, ...args))[0];
   }
-  audit(hospital: string, actor: string, action: string, resource: string) {
-    this.run(
-      "INSERT INTO audit(hospital,actor,action,resource,at) VALUES (?,?,?,?,?)",
+  async all(sql: string, ...args: SqlValue[]): Promise<Json[]> {
+    const connection = this.transactions.getStore() ?? this.pool;
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      { sql, timeout: 15_000 },
+      args,
+    );
+    return rows;
+  }
+  async run(sql: string, ...args: SqlValue[]) {
+    const connection = this.transactions.getStore() ?? this.pool;
+    const [result] = await connection.execute<ResultSetHeader>(
+      { sql, timeout: 15_000 },
+      args,
+    );
+    return result;
+  }
+  async exec(sql: string) {
+    const connection = this.transactions.getStore() ?? this.pool;
+    await connection.query(sql);
+  }
+  async audit(
+    hospital: string,
+    actor: string,
+    action: string,
+    resource: string,
+  ) {
+    await this.run(
+      "INSERT INTO audit(service,hospital,actor,action,resource,at) VALUES (?,?,?,?,?,?)",
+      this.service,
       hospital,
       actor,
       action,
@@ -43,9 +127,6 @@ export class Database {
     );
   }
   close() {
-    this.db.close();
+    return (this.closing ??= this.pool.end());
   }
 }
-
-const COMMON_SCHEMA =
-  "PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL; CREATE TABLE IF NOT EXISTS hospitals(id TEXT PRIMARY KEY,name TEXT NOT NULL,billing_url TEXT NOT NULL);\n      CREATE TABLE IF NOT EXISTS audit(\n        sequence INTEGER PRIMARY KEY AUTOINCREMENT,hospital TEXT NOT NULL,actor TEXT NOT NULL,\n        action TEXT NOT NULL,resource TEXT NOT NULL,at TEXT NOT NULL);\n      CREATE TRIGGER IF NOT EXISTS audit_no_update BEFORE UPDATE ON audit\n        BEGIN SELECT RAISE(ABORT,'audit is append-only'); END;\n      CREATE TRIGGER IF NOT EXISTS audit_no_delete BEFORE DELETE ON audit\n        BEGIN SELECT RAISE(ABORT,'audit is append-only'); END;\n      PRAGMA user_version=1;";

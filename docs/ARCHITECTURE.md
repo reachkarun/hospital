@@ -1,187 +1,84 @@
-# Microservice architecture
+# Architecture
 
-The backend is split by business ownership into independently deployed Gateway, Patient, Charge, and Billing services, with a separate external Billing mock. They use private databases, versioned HTTP contracts, and durable handoff records. Deploying one domain service does not require restarting the others.
+Gateway, Patient, Charge, Billing, and the external billing simulator are separate NestJS applications. Patient, Charge, Billing, and the simulator connect to **one MySQL database** using asynchronous connection pools. Table ownership is a code-level boundary; the database is shared infrastructure and a common availability dependency.
 
 ## Code organization
 
-All five applications run on NestJS with its standard Express adapter. Feature modules use `@Module`, HTTP controllers use `@Controller` and route decorators, and application services use `@Injectable`. Nest's dependency injection container constructs controllers and resolves each application's configured providers.
-
-For example, the Patient application is organized as follows:
-
 ```text
 services/patient-service/src/
-  main.ts                       # Configuration, startup, background loop, shutdown
+  main.ts                       # Configuration, MySQL connection, process lifecycle
   app.ts                        # Async Nest application factory
-  store.ts                      # Private database schema and storage primitives
-  seed.ts                       # Demo data
+  store.ts                      # MySQL adapter and patient query helper; no DDL
   patient/
-    patient.module.ts           # Nest module, configured providers, controller registration
-    patient.controller.ts       # Routes, roles, request validation, HTTP responses
-    patient.service.ts          # Patient queries, encounter resolution, event workflows
-    patient-events.ts           # Event processing, ordering, deduplication, replay
+    patient.module.ts           # Nest providers and dependency injection
+    patient.controller.ts       # HTTP routes, validation, roles, responses
+    patient.service.ts          # Application queries and workflows
+    patient-events.ts           # Event processing, clocks, deduplication, replay
+
+database/
+  schema.sql                    # Standalone MySQL schema, indexes, and triggers
+  README.md                     # Explicit provisioning and connection instructions
 ```
 
-Charge, Billing, Gateway, and the external billing mock follow the same layout in their `charge/`, `billing/`, `gateway/`, and `mock/` directories. Charge operations and billing job ingestion remain in focused domain helpers used by the service classes. The dispatcher and billing worker remain separate background components, managed by `main.ts` and the shared runtime lifecycle helpers.
+Other applications follow the same feature layout. Nest uses the standard Express adapter. Modules use `@Module`, controllers use `@Controller` and route decorators, and services use `@Injectable`. Factory providers inject stores and external clients into each application container. The shared `PlatformModule` supplies authentication guards, exception filters, and infrastructure endpoints. `@nestjs/swagger` serves the aggregate public contract.
 
-- **Modules** register configured providers through dynamic `register()` methods. Stores and external clients use value providers; injectable services use factory providers. Controllers receive services through `@Inject`. Dependencies are scoped to each Nest application container.
-- **Controllers** declare routes with Nest decorators, enforce endpoint roles, validate inputs using the existing Zod contracts, and map results to response codes and headers. Domain controllers contain no SQL or transaction orchestration. Explicit response codes preserve the API's existing 200, 202, and 207 semantics.
-- **Services** accept plain application data instead of HTTP request or response objects. They implement queries and workflows using the private store and domain helpers. Database queries currently live in services and domain helpers; `store.ts` provides schema and database primitives rather than a complete repository abstraction.
-- **Shared infrastructure** provides a Nest `PlatformModule` with a global authentication guard, exception filter, and controllers for health, identity, and audit. `@Internal` routes require service credentials and `@Public` marks health endpoints. Wire schemas remain in `packages/contracts`. Swagger UI and the aggregate schema use `@nestjs/swagger` at `/docs/` and `/docs/json`.
+Controllers contain no SQL. Services and domain helpers await database operations. The database adapter binds parameters and uses `AsyncLocalStorage` to keep each transaction's queries on its reserved pool connection. No application constructor or startup hook creates tables, migrates data, or inserts demo records. Schema administration is separate from process startup.
 
-Application factories are asynchronous and bootstrap with `NestFactory`. Startup awaits the factory before starting background work and listening. Nest's `onModuleDestroy` hook drains background tasks; `onApplicationShutdown` closes owned storage after HTTP shutdown. Signal handling uses `enableShutdownHooks`. Builds clear generated output first, and tests run the compiled JavaScript so TypeScript decorator metadata matches production.
-
-To add functionality, add a service method for the use case, expose it through a controller, and supply new dependencies through the feature module. For a separate feature within an application, add a sibling feature folder and register its controller in the application composition. Preserve each microservice's database ownership and communicate with other services through their versioned APIs. Test service behavior directly and use application-factory integration tests to verify HTTP contracts.
-
-## Service diagram
+## Services and shared storage
 
 ```mermaid
 flowchart TB
-    Mobile[Mobile client / Swagger] -->|Bearer-authenticated REST| Gateway
-    Broker[Hospital enterprise broker mock] -->|Normalized source events| Gateway
-    subgraph Edge[Gateway project - stateless]
-      Gateway[Routing / authentication / aggregate OpenAPI]
-    end
-    subgraph Patient[Patient service project]
-      PAPI[Patient API / inbox consumer / replay loop]
-      PDB[(Private patient DB\nentities / clocks / inbox / audit)]
-      PAPI --> PDB
-    end
-    subgraph Charge[Charge service project]
-      CAPI[Drafts / offline sync / submission API]
-      CDB[(Private charge DB\ncharges / revisions / operations / outbox / audit)]
-      Dispatcher[Leased HTTP dispatcher / result projection]
-      CAPI -->|Local transaction| CDB
-      CDB --> Dispatcher
-      Dispatcher -->|Local result transaction| CDB
-    end
-    subgraph Billing[Billing service project]
-      BAPI[Internal durable job API]
-      BDB[(Private billing DB\njobs / retry receipts / audit)]
-      Worker[Leased external billing worker]
-      BAPI --> BDB
-      BDB --> Worker
-      Worker -->|Validated acknowledgment| BDB
-    end
-    Gateway -->|Patient and broker routes| PAPI
-    Gateway -->|Charge / sync / submission routes| CAPI
-    Gateway -->|Admin audit and metrics| BAPI
-    CAPI -->|Authenticated encounter lookup| PAPI
-    Dispatcher -->|Idempotent PUT job / retry command| BAPI
-    BAPI -->|Current durable job state| Dispatcher
-    Worker -->|Stable-key POST / status GET| External[Hospital billing REST API\nseparate mock project for demo]
+  Client[Mobile client / Swagger] --> Gateway
+  Source[Patient source publisher] --> Gateway
+  Gateway --> Patient
+  Gateway --> Charge
+  Gateway --> Billing
+  Charge -->|Resolve encounter over HTTP| Patient
+  Charge -->|Durable job delivery and polling| Billing
+  Billing -->|Submit / reconcile| External[Hospital billing / simulator]
+  Patient --> DB[(One MySQL database: rounding_app)]
+  Charge --> DB
+  Billing --> DB
+  External -. Simulator receipts only .-> DB
 ```
 
-No service mounts another service's volume or queries its tables. Shared `packages/contracts` contains wire types, runtime validators and demo example data. `packages/platform` contains generic SQL transaction, HTTP authentication/error and process-lifecycle helpers. It has no patient or charge tables. Each service declares its dependencies and builds to its own `dist/`; runtime images contain that project's domain code and the shared packages, not other services' domain code.
+| Owner                | Tables                                                                   |
+| -------------------- | ------------------------------------------------------------------------ |
+| Shared configuration | `hospitals`                                                              |
+| Shared audit storage | `audit`, filtered by `service` and `hospital`                            |
+| Patient              | `patient_entities`, `patient_field_clocks`, `patient_inbox`              |
+| Charge               | `charges`, `charge_revisions`, `charge_operations`, `charge_submissions` |
+| Billing              | `billing_submissions`, `billing_retry_receipts`                          |
+| Optional simulator   | `mock_modes`, `mock_results`                                             |
 
-## Data ownership and logical ER model
+All domain identifiers are scoped by hospital. JSON columns preserve validated wire payloads and clinical projections. The `mysql2` driver returns JSON columns as strings for explicit parsing. InnoDB indexes cover tenant keys, client receipts, replay, and worker scheduling. Application accounts can read/write data but need no schema privileges. The SQL script defines append-only audit/revision triggers and charge revision capture.
 
-```mermaid
-erDiagram
-    PATIENT ||--o{ VISIT : has
-    PROVIDER ||--o{ ASSIGNMENT : receives
-    VISIT ||--o{ ASSIGNMENT : has
-    VISIT ||--o{ CHARGE : "external visit ID only"
-    CHARGE ||--|{ REVISION : retains
-    SUBMISSION ||--|{ CHARGE : locks
-    SUBMISSION ||--o| BILLING_JOB : "HTTP contract / same ID"
-    BILLING_JOB ||--o{ RETRY_RECEIPT : deduplicates
-    PATIENT {
-      string hospital_id PK
-      string patient_id PK
-      json demographics_and_clinical_data
-    }
-    VISIT {
-      string hospital_id PK
-      string visit_id PK
-      string patient_id
-      datetime admission_and_discharge
-      json location
-    }
-    PROVIDER {
-      string hospital_id PK
-      string provider_id PK
-      string npi
-    }
-    ASSIGNMENT {
-      string hospital_id PK
-      string assignment_id PK
-      string provider_id
-      string visit_id
-      boolean active
-    }
-    CHARGE {
-      string hospital_id PK
-      string charge_id PK
-      string provider_id
-      string visit_id
-      json service_quantity_date_modifiers_notes
-      int version
-      string status
-    }
-    REVISION {
-      string hospital_id PK
-      string charge_id PK
-      int version PK
-      json immutable_snapshot
-    }
-    SUBMISSION {
-      string hospital_id PK
-      string submission_id PK
-      string mobile_key
-      json immutable_billing_payload
-      string projected_status
-      datetime dispatch_lease
-      string retry_command_id
-    }
-    BILLING_JOB {
-      string hospital_id PK
-      string submission_id PK
-      string external_idempotency_key
-      json immutable_payload
-      datetime first_attempt
-      datetime worker_lease
-      json acknowledgment
-      string status
-    }
-    RETRY_RECEIPT {
-      string hospital_id PK
-      string submission_id PK
-      string operation_id PK
-    }
-```
+## Transaction and concurrency rules
 
-Patient entities, visits, providers and assignments are validated JSON projections in Patient's `entities` table. Patient also owns `inbox` and `field_clocks`. Charge owns `operations`, `charges`, `charge_revisions`, and `submissions` (its outbox and local result projection). Billing owns a separate `submissions` table (durable external jobs) and `retry_receipts`. Same table names in separate databases do not imply shared state. Cross-service ER links are external identifiers, never cross-database foreign keys. Every domain record is scoped by hospital.
+- A transaction uses one pooled connection until commit or rollback. Unrelated asynchronous requests use their own connections.
+- Patient ingestion, draft saves, submissions, retry commands, and simulator receipt creation lock the hospital row before read/check/write sequences. This protects missing-row idempotency checks across processes. Transactions use READ COMMITTED isolation and bounded retries for deadlocks/lock timeouts.
+- Worker and dispatcher claims use `FOR UPDATE SKIP LOCKED`, then persist lease tokens before releasing their transactions. Result updates lock their submission row and verify the lease token. Expired workers cannot overwrite newer work.
+- Database transactions contain no HTTP calls. Encounter lookup, billing delivery, and external reconciliation happen outside locks.
+- Hospital-level serialization is deliberately simple and can constrain a busy hospital's write throughput. Move to finer-grained locking only while preserving duplicate receipt and version-conflict invariants.
 
-Each service stores its own hospital configuration and append-only audit. Billing alone uses its hospital billing URL to contact external systems. Charge stores only the encounter/billing fields needed in the immutable request; it does not replicate patient clinical records. Audit/revision triggers prevent ordinary UPDATE/DELETE, but privileged database administrators still require independent oversight and archival controls.
+## Patient ingestion
 
-## Transaction and failure boundaries
+The source system remains authoritative. The integration endpoint authenticates a hospital-scoped integration principal, validates the event envelope, and deduplicates by hospital/message ID and payload digest. Per-field timestamp/message-ID clocks make independent late updates deterministic. Unassignment tombstones prevent late assignments from restoring access.
 
-### Patient ingestion
+Processing uses a savepoint inside the inbox transaction. Missing dependencies become WAITING; unsupported schemas and invalid relationships become QUARANTINED. Partial projection writes roll back to the savepoint. Successful upstream events trigger bounded replay; the background loop also replays waiting events. Repeated delivery returns the stored outcome. Infrastructure failure rolls back the whole transaction for safe redelivery.
 
-Envelope identity, projections, clocks and audit commit in Patient's transaction. Schema failures quarantine without modifying clinical state. Dependency gaps wait durably; an independent Patient replay loop revisits them. Timestamp/field ordering and unassignment tombstones preserve the prior behavior. Strict global source order still requires a broker sequence/watermark contract.
+## Charge and billing flow
 
-### Charge validation and offline edits
+Saving drafts uses stable operation IDs, stored responses, and expected versions. A committed retry returns its receipt even if Patient service is down. New edits resolve encounter authorization through Patient before opening the write transaction. Sync processes operations sequentially and returns HTTP 207 with individual outcomes.
 
-Charge authenticates the provider locally and requests a minimal encounter context from `POST /internal/v1/encounters/resolve`. Patient validates current/historical assignment and returns hospital/provider/visit IDs, MRN/NPI and stay dates. Charge verifies the response identity and service dates, then performs its own version/key checks and transaction. No network call holds a database lock.
+Submission atomically locks draft charges and writes an immutable request to `charge_submissions`. Its dispatcher sends the same submission ID to Billing, which commits `billing_submissions` before acknowledging. Lost HTTP responses safely replay that ID. Charge polls and projects validated item acknowledgments into charges and revisions. The database is shared, but this workflow still uses durable HTTP handoff and eventual consistency.
 
-This is point-in-time validation, not a distributed serializable transaction. A discharge/assignment change can arrive immediately after the lookup. New submissions re-resolve the encounter; already queued immutable requests are not rewritten. Historical assignments are intentionally allowed for post-discharge billing. A stricter hospital policy would need source version tokens/reservations or a compensation workflow. Patient outages fail new edits safely; known operation and submission receipts are returned without a new lookup.
+Billing retries preserve the original external key, payload, and first-attempt time. A repeated attempt queries the external system before replay. Blind POSTs stop after 23 hours because the external deduplication contract lasts 24 hours. Uncertain results remain in REVIEW. Partial acceptance only allows corrected rejected items into a new submission. Manual retries never reset the original clock.
 
-### Charge-to-Billing handoff
+## Configuration and lifecycle
 
-Charge atomically locks the selected drafts, increments versions, stores the immutable payload and mobile receipt, and audits the action. A separate loop leases its own outbox row for 30 seconds and PUTs the same job to Billing. Billing validates the versioned contract and stores it before replying. Identical repeated requests return current state; changed payloads under the same job ID conflict. A timeout after commit leaves the outbox eligible for the same-key retry.
+Connection settings are `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD`, and `DB_POOL_SIZE`. All database-using applications target the same database. Credentials are supplied through environment variables or root `.env`; no local database paths are used. Hospital billing URLs are explicit records in `hospitals`.
 
-Billing runs its own 60-second leased external worker. It can finish while Charge is down. The Charge dispatcher continues retrieving current state through idempotent PUT responses, validates IDs/digest/item acknowledgment, and atomically updates local item states. Fencing tokens prevent stale dispatchers overwriting newer results. This is eventual consistency: mobile clients may briefly see QUEUED after Billing has committed ACCEPTED. They must poll the returned submission ID.
+Nest's `onModuleDestroy` drains background tasks. HTTP shutdown finishes before `onApplicationShutdown` closes the connection pool. Health checks query MySQL; they do not initialize it. Gateway remains stateless. Docker uses one MySQL volume and no application database-file volumes.
 
-Manual retry is another durable command with its own operation ID. Billing receipts deduplicate that command without resetting a live worker lease, billing key, original payload, attempt count, or first-attempt timestamp. The local command is removed only after its response is processed; a lost response safely replays the command.
-
-### External billing uncertainty
-
-The original external contract still grants only 24 hours of deduplication. Billing uses the same external key for transport retries, queries prior status first, and stops blind POSTs after 23 hours. A complete valid acknowledgment can finalize after expiry; a 404 or summary-only response cannot justify another POST then. Items stay locked in REVIEW until authoritative reconciliation is possible. Partial acceptance updates only corresponding items; a new batch contains only corrected rejected drafts. Neither service restarts, handoff retries nor migration resets the time window.
-
-## Deployment, authentication and scaling
-
-Gateway exposes port 3002 and Swagger; only the mock additionally exposes port 4001 for demo controls. Patient, Charge and Billing have private Docker-network ports and distinct named volumes. All services independently validate external bearer credentials. Internal Patient and Billing APIs require distinct service tokens; Gateway has no internal API route. In production replace demo static tokens with workload identity/mTLS and short-lived user tokens, encrypt PHI storage/backups and terminate TLS.
-
-Separate projects allow independent deployment/storage migrations, ownership and failure isolation. They introduce network latency, partial failure, eventual consistency, service authentication, multiple audit cursors and operational overhead. This split is intentionally requested; the previous monolith had lower operational cost for the original scope.
-
-Each service still uses synchronous SQLite with WAL and short write transactions. These are independent single-host stores, not a multi-host clustered database. Horizontal service replicas need PostgreSQL (per service or separately permissioned databases) with row locking/unique constraints. HTTP outbox polling is sufficient for this demo; a broker can later carry the same versioned job/result contracts without changing durable identity rules. Add backpressure, shared rate limits, queue-age alerts, per-hospital scheduling, tracing and circuit breakers as measured load requires.
+Separate processes can deploy independently, but shared schema changes require coordination. Configure backups, restore drills, database capacity, pool limits, tenant-aware metrics, and authentication for the intended deployment. The per-process HTTP rate limiter is not a cluster-wide quota.

@@ -1,62 +1,63 @@
-import { test } from "node:test";
+import { test, testDatabaseConfig, seed, seedHospitals } from "./database.js";
 import assert from "node:assert/strict";
 import { syncBatch, type Principal } from "@rounding/contracts";
-import { seedHospitals } from "@rounding/platform/runtime";
 import { Store as PatientStore } from "../services/patient-service/src/store.js";
-import { seed } from "../services/patient-service/src/seed.js";
 import { PatientService } from "../services/patient-service/src/patient/patient.service.js";
 import { Store as ChargeStore } from "../services/charge-service/src/store.js";
 import { ChargeService } from "../services/charge-service/src/charge/charge.service.js";
-
 const provider: Principal = {
   hospital: "HOSP-001",
   provider: "PROV-789",
   role: "provider",
 };
-
-test("patient service scopes queries and encounter access without an HTTP server", (t) => {
-  const store = new PatientStore();
-  t.after(() => store.close());
-  seed(store, "http://billing");
+test("patient service scopes queries and encounter access without an HTTP server", async (t) => {
+  const store = new PatientStore(testDatabaseConfig());
+  t.after(async () => await store.close());
+  await seed(store, "http://billing");
   const service = new PatientService(store);
   const query = { after: "", limit: 50 };
-  const first = service.list(provider, query);
-  const second = service.list({ ...provider, hospital: "HOSP-002" }, query);
+  const first = await service.list(provider, query);
+  const second = await service.list(
+    { ...provider, hospital: "HOSP-002" },
+    query,
+  );
   assert.equal(first.items.length, 1);
   assert.equal(second.items.length, 1);
   assert.notEqual(first.items[0].mrn, second.items[0].mrn);
   assert.deepEqual(
-    service.list({ ...provider, provider: "unassigned" }, query).items,
+    (await service.list({ ...provider, provider: "unassigned" }, query)).items,
     [],
   );
-  assert.throws(
-    () => service.visit({ ...provider, provider: "unassigned" }, "VISIT-001"),
+  await assert.rejects(
+    async () =>
+      await service.visit({ ...provider, provider: "unassigned" }, "VISIT-001"),
     /VISIT_NOT_FOUND/,
   );
   assert.equal(
-    service.resolveEncounter({
-      hospitalId: provider.hospital,
-      providerId: provider.provider,
-      visitId: "VISIT-001",
-    }).patientMrn,
+    (
+      await service.resolveEncounter({
+        hospitalId: provider.hospital,
+        providerId: provider.provider,
+        visitId: "VISIT-001",
+      })
+    ).patientMrn,
     first.items[0].mrn,
   );
 });
-
 test("charge service preserves sync order, partial failures, and durable replay", async (t) => {
-  const patients = new PatientStore();
-  const charges = new ChargeStore();
-  t.after(() => {
-    charges.close();
-    patients.close();
+  const patients = new PatientStore(testDatabaseConfig());
+  const charges = new ChargeStore(testDatabaseConfig());
+  t.after(async () => {
+    await charges.close();
+    await patients.close();
   });
-  seed(patients, "http://billing");
-  seedHospitals(charges, "http://billing");
+  await seed(patients, "http://billing");
+  await seedHospitals(charges, "http://billing");
   const patientService = new PatientService(patients);
   let resolving = true;
   const service = new ChargeService(charges, async (p, visitId) => {
     assert.ok(resolving, "a replay must use its committed receipt");
-    return patientService.resolveEncounter({
+    return await patientService.resolveEncounter({
       hospitalId: p.hospital,
       providerId: p.provider,
       visitId,
@@ -81,15 +82,16 @@ test("charge service preserves sync order, partial failures, and durable replay"
     [200, 409, 200],
   );
   assert.equal(outcome.results[1]?.error?.code, "VERSION_CONFLICT");
-  assert.equal(service.get(provider, "same-charge").version, 2);
-  assert.equal(service.get(provider, "same-charge").quantity, 3);
+  assert.equal((await service.get(provider, "same-charge")).version, 2);
+  assert.equal((await service.get(provider, "same-charge")).quantity, 3);
   resolving = false;
   const replay = await service.sync(provider, {
     operations: [batch.operations[0]!, batch.operations[2]!],
   });
   assert.deepEqual(replay.results, [outcome.results[0], outcome.results[2]]);
-  assert.throws(
-    () => service.get({ ...provider, hospital: "HOSP-002" }, "same-charge"),
+  await assert.rejects(
+    async () =>
+      await service.get({ ...provider, hospital: "HOSP-002" }, "same-charge"),
     /CHARGE_NOT_FOUND/,
   );
 });

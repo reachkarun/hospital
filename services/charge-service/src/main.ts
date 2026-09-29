@@ -1,7 +1,6 @@
 import {
   serviceConfig,
   secret,
-  seedHospitals,
   background,
   listen,
 } from "@rounding/platform/runtime";
@@ -9,10 +8,9 @@ import { Store } from "./store.js";
 import { buildChargeApi } from "./app.js";
 import { patientClient } from "./patient-client.js";
 import { billingClient, Dispatcher } from "./dispatcher.js";
-
 const cfg = serviceConfig("charges", 3102);
-const store = new Store(cfg.database);
-if (cfg.demo) seedHospitals(store, cfg.billingUrl);
+const store = new Store();
+await store.connect();
 const app = await buildChargeApi(
   store,
   cfg.credentials,

@@ -1,5 +1,6 @@
 import { httpRequest } from "./http.js";
-import { test, type TestContext } from "node:test";
+import type { TestContext } from "node:test";
+import { test, testDatabaseConfig, seed, seedHospitals } from "./database.js";
 import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -23,10 +24,7 @@ import {
 import { patientClient } from "../services/charge-service/src/patient-client.js";
 import { Database, type Json } from "@rounding/platform/db";
 import { demoCredentials } from "@rounding/platform/config";
-import { seedHospitals } from "@rounding/platform/runtime";
 import { sampleEvent } from "@rounding/contracts/sample";
-import { seed } from "../services/patient-service/src/seed.js";
-
 const headers = { authorization: "Bearer demo-provider-one" };
 const draft = (id = "one", code = "99213", version = 0) => ({
   operationId: `op-${id}-${version}`,
@@ -41,17 +39,16 @@ const draft = (id = "one", code = "99213", version = 0) => ({
   },
 });
 async function fixture(t: TestContext) {
-  const directory = mkdtempSync(join(tmpdir(), "rounding-micro-"));
-  const patient = new PatientStore(join(directory, "patient.db"));
-  const charge = new ChargeStore(join(directory, "charge.db"));
-  const billing = new BillingStore(join(directory, "billing.db"));
-  const mockStore = new Database();
+  const patient = new PatientStore(testDatabaseConfig());
+  const charge = new ChargeStore(testDatabaseConfig());
+  const billing = new BillingStore(testDatabaseConfig());
+  const mockStore = new Database(testDatabaseConfig());
   const mock = await buildMock(mockStore, "external-secret");
   await mock.listen(0, "127.0.0.1");
   const mockUrl = await mock.getUrl();
-  seed(patient, `${mockUrl}/api/v1`);
-  seedHospitals(charge, `${mockUrl}/api/v1`);
-  seedHospitals(billing, `${mockUrl}/api/v1`);
+  await seed(patient, `${mockUrl}/api/v1`);
+  await seedHospitals(charge, `${mockUrl}/api/v1`);
+  await seedHospitals(billing, `${mockUrl}/api/v1`);
   const patientApi = await buildPatientApi(
     patient,
     demoCredentials,
@@ -114,11 +111,10 @@ async function fixture(t: TestContext) {
       billingApi.close(),
       mock.close(),
     ]);
-    patient.close();
-    charge.close();
-    billing.close();
-    mockStore.close();
-    rmSync(directory, { recursive: true, force: true });
+    await patient.close();
+    await charge.close();
+    await billing.close();
+    await mockStore.close();
   });
   return {
     patient,
@@ -140,15 +136,15 @@ async function fixture(t: TestContext) {
     },
   };
 }
-test("separate databases, service auth, gateway routing, and Swagger request examples", async (t) => {
+test("shared MySQL database, service auth, gateway routing, and Swagger request examples", async (t) => {
   const f = await fixture(t);
   assert.equal(
-    f.charge.get("SELECT name FROM sqlite_master WHERE name='entities'"),
-    undefined,
+    (await f.charge.get("SELECT DATABASE() AS name"))!.name,
+    testDatabaseConfig().database,
   );
   assert.equal(
-    f.patient.get("SELECT name FROM sqlite_master WHERE name='charges'"),
-    undefined,
+    (await f.patient.get("SELECT DATABASE() AS name"))!.name,
+    testDatabaseConfig().database,
   );
   assert.equal(
     (
@@ -208,14 +204,14 @@ test("offline receipts, version conflicts, charge revisions, and tenant isolatio
     2,
   );
   assert.equal(
-    f.charge.get(
+    (await f.charge.get(
       "SELECT COUNT(*) AS n FROM charge_revisions WHERE id=?",
       "one",
-    )!.n,
+    ))!.n,
     2,
   );
-  assert.throws(
-    () => f.charge.run("DELETE FROM charge_revisions"),
+  await assert.rejects(
+    async () => await f.charge.run("DELETE FROM charge_revisions"),
     /append-only/,
   );
 });
@@ -227,7 +223,7 @@ test("Patient outage does not prevent exact draft retries or existing charge rea
   assert.equal((await f.request("/v1/charges/one")).statusCode, 200);
   assert.equal((await f.request("/v1/charges", draft("new"))).statusCode, 503);
   assert.equal(
-    f.charge.get("SELECT id FROM charges WHERE id=?", "new"),
+    await f.charge.get("SELECT id FROM charges WHERE id=?", "new"),
     undefined,
   );
 });
@@ -251,14 +247,20 @@ test("durable HTTP handoff and eventual result projection finish end-to-end", as
     ).statusCode,
     409,
   );
-  assert.equal(f.billing.get("SELECT id FROM submissions"), undefined);
+  assert.equal(
+    await f.billing.get("SELECT id FROM billing_submissions"),
+    undefined,
+  );
   await f.pump();
   assert.equal(
     (await f.request(`/v1/submissions/${identifier}`)).json().status,
     "ACCEPTED",
   );
   assert.equal((await f.request("/v1/charges/one")).json().status, "ACCEPTED");
-  assert.equal(f.mockStore.get("SELECT COUNT(*) AS n FROM mock_results")!.n, 1);
+  assert.equal(
+    (await f.mockStore.get("SELECT COUNT(*) AS n FROM mock_results"))!.n,
+    1,
+  );
 });
 test("lost service-to-service receipt replays one billing job without duplicate external effects", async (t) => {
   const f = await fixture(t);
@@ -276,12 +278,18 @@ test("lost service-to-service receipt replays one billing job without duplicate 
         throw new Error("lost HTTP response");
       },
     },
-    () => 100_000,
+    () => 100000,
   );
   await lossy.tick();
-  assert.equal(f.billing.get("SELECT COUNT(*) AS n FROM submissions")!.n, 1);
+  assert.equal(
+    (await f.billing.get("SELECT COUNT(*) AS n FROM billing_submissions"))!.n,
+    1,
+  );
   await f.pump();
-  assert.equal(f.billing.get("SELECT COUNT(*) AS n FROM submissions")!.n, 1);
+  assert.equal(
+    (await f.billing.get("SELECT COUNT(*) AS n FROM billing_submissions"))!.n,
+    1,
+  );
   assert.equal((await f.request("/v1/charges/one")).json().status, "ACCEPTED");
 });
 test("partial acceptance corrects only rejected charges, retains reference and billing idempotency", async (t) => {
@@ -312,7 +320,10 @@ test("partial acceptance corrects only rejected charges, retains reference and b
   });
   await f.pump();
   assert.equal((await f.request("/v1/charges/bad")).json().status, "ACCEPTED");
-  assert.equal(f.mockStore.get("SELECT COUNT(*) AS n FROM mock_results")!.n, 2);
+  assert.equal(
+    (await f.mockStore.get("SELECT COUNT(*) AS n FROM mock_results"))!.n,
+    2,
+  );
 });
 test("billing service unavailable leaves charge outbox durable and charges locked", async (t) => {
   const f = await fixture(t);
@@ -329,7 +340,7 @@ test("billing service unavailable leaves charge outbox durable and charges locke
   );
   await f.dispatcher.tick();
   assert.equal(
-    f.charge.get("SELECT status FROM submissions")!.status,
+    (await f.charge.get("SELECT status FROM charge_submissions"))!.status,
     "QUEUED",
   );
   assert.equal(
@@ -346,9 +357,9 @@ test("manual retry command is durable and idempotent without changing external f
   });
   const identifier = queued.json().submissionId;
   await f.dispatcher.tick();
-  const firstAttempt = Date.now() - 86_400_000;
-  f.billing.run(
-    "UPDATE submissions SET status='REVIEW',attempts=1,first_attempt=?,error='IDEMPOTENCY_WINDOW_EXPIRED'",
+  const firstAttempt = Date.now() - 86400000;
+  await f.billing.run(
+    "UPDATE billing_submissions SET status='REVIEW',attempts=1,first_attempt=?,error='IDEMPOTENCY_WINDOW_EXPIRED'",
     firstAttempt,
   );
   f.advance();
@@ -360,7 +371,8 @@ test("manual retry command is durable and idempotent without changing external f
   f.advance();
   await f.dispatcher.tick();
   assert.equal(
-    f.billing.get("SELECT first_attempt FROM submissions")!.first_attempt,
+    (await f.billing.get("SELECT first_attempt FROM billing_submissions"))!
+      .first_attempt,
     firstAttempt,
   );
   await f.worker.tick();
@@ -370,7 +382,10 @@ test("manual retry command is durable and idempotent without changing external f
     (await f.request(`/v1/submissions/${identifier}`)).json().status,
     "REVIEW",
   );
-  assert.equal(f.mockStore.get("SELECT COUNT(*) AS n FROM mock_results")!.n, 0);
+  assert.equal(
+    (await f.mockStore.get("SELECT COUNT(*) AS n FROM mock_results"))!.n,
+    0,
+  );
 });
 test("post-discharge service dates and source integration roles remain enforced", async (t) => {
   const f = await fixture(t);

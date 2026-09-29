@@ -12,7 +12,6 @@ export type ResolveEncounter = (
   p: Principal,
   visitId: string,
 ) => Promise<Encounter>;
-
 export function viewCharge(row: Json) {
   return {
     chargeId: row.id,
@@ -23,7 +22,6 @@ export function viewCharge(row: Json) {
     submissionId: row.submission,
   };
 }
-
 function authorizeVisit(
   visit: Encounter,
   p: Principal,
@@ -56,7 +54,6 @@ function authorizeVisit(
     );
   return visit;
 }
-
 export async function save(
   store: Store,
   p: Principal,
@@ -64,8 +61,8 @@ export async function save(
   resolve: ResolveEncounter,
 ) {
   // Committed retries remain available even while the Patient service is down.
-  const receipt = store.get(
-    "SELECT * FROM operations WHERE hospital=? AND provider=? AND id=?",
+  const receipt = await store.get(
+    "SELECT * FROM charge_operations WHERE hospital=? AND provider=? AND id=?",
     p.hospital,
     p.provider,
     input.operationId,
@@ -75,10 +72,11 @@ export async function save(
     return JSON.parse(receipt.response);
   }
   const context = await resolve(p, input.charge.visitId);
-  return store.transaction(() => {
+  return await store.transaction(async () => {
+    await store.lockHospital(p.hospital);
     const hash = digest(input);
-    const prior = store.get(
-      "SELECT * FROM operations WHERE hospital=? AND provider=? AND id=?",
+    const prior = await store.get(
+      "SELECT * FROM charge_operations WHERE hospital=? AND provider=? AND id=?",
       p.hospital,
       p.provider,
       input.operationId,
@@ -93,7 +91,7 @@ export async function save(
       input.charge.visitId,
       input.charge.dateOfService,
     );
-    const old = store.get(
+    const old = await store.get(
       "SELECT * FROM charges WHERE hospital=? AND id=?",
       p.hospital,
       input.chargeId,
@@ -116,9 +114,9 @@ export async function save(
       "CHARGE_VISIT_IMMUTABLE",
     );
     const version = input.expectedVersion + 1;
-    store.run(
+    await store.run(
       `INSERT INTO charges(hospital,id,provider,visit,body,version,status) VALUES (?,?,?,?,?,?,'DRAFT')
-      ON CONFLICT(hospital,id) DO UPDATE SET body=excluded.body,version=excluded.version,status='DRAFT',error=NULL,submission=NULL`,
+      AS incoming ON DUPLICATE KEY UPDATE body=incoming.body,version=incoming.version,status='DRAFT',error=NULL,submission=NULL`,
       p.hospital,
       input.chargeId,
       p.provider,
@@ -127,15 +125,15 @@ export async function save(
       version,
     );
     const result = { chargeId: input.chargeId, version, status: "DRAFT" };
-    store.run(
-      "INSERT INTO operations VALUES (?,?,?,?,?)",
+    await store.run(
+      "INSERT INTO charge_operations VALUES (?,?,?,?,?)",
       p.hospital,
       p.provider,
       input.operationId,
       hash,
       JSON.stringify(result),
     );
-    store.audit(
+    await store.audit(
       p.hospital,
       p.provider,
       old ? "CHARGE_UPDATED" : "CHARGE_CREATED",
@@ -144,7 +142,6 @@ export async function save(
     return result;
   });
 }
-
 export function submissionView(row: Json) {
   return {
     submissionId: row.id,
@@ -155,7 +152,6 @@ export function submissionView(row: Json) {
     billing: row.response ? JSON.parse(row.response) : null,
   };
 }
-
 export async function submitCharges(
   store: Store,
   p: Principal,
@@ -163,8 +159,8 @@ export async function submitCharges(
   resolve: ResolveEncounter,
 ) {
   const hash = digest({ ...input, chargeIds: [...input.chargeIds].sort() });
-  const receipt = store.get(
-    "SELECT * FROM submissions WHERE hospital=? AND provider=? AND client_key=?",
+  const receipt = await store.get(
+    "SELECT * FROM charge_submissions WHERE hospital=? AND provider=? AND client_key=? FOR UPDATE",
     p.hospital,
     p.provider,
     input.clientSubmissionId,
@@ -173,7 +169,7 @@ export async function submitCharges(
     check(receipt.digest === hash, 409, "SUBMISSION_KEY_REUSED");
     return submissionView(receipt);
   }
-  const first = store.get(
+  const first = await store.get(
     "SELECT visit FROM charges WHERE hospital=? AND provider=? AND id=?",
     p.hospital,
     p.provider,
@@ -181,10 +177,11 @@ export async function submitCharges(
   );
   check(first, 404, "CHARGE_NOT_FOUND");
   const context = await resolve(p, first.visit);
-  return store.transaction(() => {
+  return await store.transaction(async () => {
+    await store.lockHospital(p.hospital);
     const hash = digest({ ...input, chargeIds: [...input.chargeIds].sort() });
-    const prior = store.get(
-      "SELECT * FROM submissions WHERE hospital=? AND provider=? AND client_key=?",
+    const prior = await store.get(
+      "SELECT * FROM charge_submissions WHERE hospital=? AND provider=? AND client_key=? FOR UPDATE",
       p.hospital,
       p.provider,
       input.clientSubmissionId,
@@ -193,8 +190,9 @@ export async function submitCharges(
       check(prior.digest === hash, 409, "SUBMISSION_KEY_REUSED");
       return submissionView(prior);
     }
-    const rows = input.chargeIds.map((identifier) => {
-      const row = store.get(
+    const rows: Json[] = [];
+    for (const identifier of input.chargeIds) {
+      const row = await store.get(
         "SELECT * FROM charges WHERE hospital=? AND id=? AND provider=?",
         p.hospital,
         identifier,
@@ -202,8 +200,8 @@ export async function submitCharges(
       );
       check(row, 404, "CHARGE_NOT_FOUND");
       check(row.status === "DRAFT", 409, "CHARGE_NOT_DRAFT");
-      return row;
-    });
+      rows.push(row);
+    }
     const visitId = rows[0]!.visit;
     check(
       rows.every((row) => row.visit === visitId),
@@ -232,8 +230,8 @@ export async function submitCharges(
       clientSubmissionId: submissionId,
     };
     // The submission row is the transactional outbox, including an immutable payload.
-    store.run(
-      `INSERT INTO submissions(hospital,id,provider,client_key,digest,payload,status) VALUES (?,?,?,?,?,?,'QUEUED')`,
+    await store.run(
+      `INSERT INTO charge_submissions(hospital,id,provider,client_key,digest,payload,status) VALUES (?,?,?,?,?,?,'QUEUED')`,
       p.hospital,
       submissionId,
       p.provider,
@@ -242,33 +240,38 @@ export async function submitCharges(
       JSON.stringify(payload),
     );
     for (const row of rows) {
-      store.run(
+      await store.run(
         "UPDATE charges SET status='QUEUED',submission=?,version=version+1 WHERE hospital=? AND id=?",
         submissionId,
         p.hospital,
         row.id,
       );
-      store.audit(p.hospital, p.provider, "CHARGE_QUEUED", row.id);
+      await store.audit(p.hospital, p.provider, "CHARGE_QUEUED", row.id);
     }
-    store.audit(p.hospital, p.provider, "SUBMISSION_QUEUED", submissionId);
+    await store.audit(
+      p.hospital,
+      p.provider,
+      "SUBMISSION_QUEUED",
+      submissionId,
+    );
     return submissionView(
-      store.get(
-        "SELECT * FROM submissions WHERE hospital=? AND id=?",
+      (await store.get(
+        "SELECT * FROM charge_submissions WHERE hospital=? AND id=? FOR UPDATE",
         p.hospital,
         submissionId,
-      )!,
+      ))!,
     );
   });
 }
-
-export function retrySubmission(
+export async function retrySubmission(
   store: Store,
   p: Principal,
   identifier: string,
 ) {
-  return store.transaction(() => {
-    const row = store.get(
-      "SELECT * FROM submissions WHERE hospital=? AND id=? AND provider=?",
+  return await store.transaction(async () => {
+    await store.lockHospital(p.hospital);
+    const row = await store.get(
+      "SELECT * FROM charge_submissions WHERE hospital=? AND id=? AND provider=? FOR UPDATE",
       p.hospital,
       identifier,
       p.provider,
@@ -280,13 +283,13 @@ export function retrySubmission(
       "SUBMISSION_NOT_RETRYABLE",
     );
     // Preserve first_attempt and payload: retries must never acquire a new billing key.
-    store.run(
-      "UPDATE submissions SET status='RETRY',dispatch_at=0,retry_request=? WHERE hospital=? AND id=?",
+    await store.run(
+      "UPDATE charge_submissions SET status='RETRY',dispatch_at=0,retry_request=? WHERE hospital=? AND id=?",
       row.retry_request ?? randomUUID(),
       p.hospital,
       identifier,
     );
-    store.audit(
+    await store.audit(
       p.hospital,
       p.provider,
       "SUBMISSION_RETRY_REQUESTED",

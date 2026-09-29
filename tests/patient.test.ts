@@ -1,30 +1,30 @@
-import { test } from "node:test";
+import { test, testDatabaseConfig, seed, seedHospitals } from "./database.js";
 import assert from "node:assert/strict";
 import { Store } from "../services/patient-service/src/store.js";
-import { seed } from "../services/patient-service/src/seed.js";
 import { consume } from "../services/patient-service/src/patient/patient-events.js";
 import { sampleEvent } from "@rounding/contracts/sample";
 const hospital = "HOSP-001";
-function setup() {
-  const s = new Store();
-  seed(s, "http://billing");
+async function setup() {
+  const s = new Store(testDatabaseConfig());
+  await seed(s, "http://billing");
   return s;
 }
-
-test("patient duplicate receipts and changed-message detection are durable", () => {
-  const s = setup();
-  assert.equal(consume(s, hospital, sampleEvent()).duplicate, true);
-  assert.throws(
-    () => consume(s, hospital, { ...sampleEvent(), source: "changed" }),
+test("patient duplicate receipts and changed-message detection are durable", async () => {
+  const s = await setup();
+  assert.equal((await consume(s, hospital, sampleEvent())).duplicate, true);
+  await assert.rejects(
+    async () =>
+      await consume(s, hospital, { ...sampleEvent(), source: "changed" }),
     /MESSAGE_ID_REUSED/,
   );
-  assert.deepEqual(s.entity(hospital, "patient", "PAT-456")!.allergies, [
-    "Penicillin",
-  ]);
-  s.close();
+  assert.deepEqual(
+    (await s.entity(hospital, "patient", "PAT-456"))!.allergies,
+    ["Penicillin"],
+  );
+  await s.close();
 });
-test("out-of-order independent fields converge and missing visit dependencies replay", () => {
-  const s = setup();
+test("out-of-order independent fields converge and missing visit dependencies replay", async () => {
+  const s = await setup();
   const base = sampleEvent();
   for (const [messageId, timestamp, changes] of [
     ["new", "2026-01-18T00:00:00Z", { phone: { new: "new" } }],
@@ -34,17 +34,18 @@ test("out-of-order independent fields converge and missing visit dependencies re
       { phone: { new: "old" }, allergies: { new: ["Late allergy"] } },
     ],
   ] as const)
-    consume(s, hospital, {
+    await consume(s, hospital, {
       ...base,
       messageId,
       timestamp,
       eventType: "PATIENT_UPDATE",
       payload: { patientId: "PAT-456", changes, updatedAt: timestamp },
     });
-  assert.equal(s.entity(hospital, "patient", "PAT-456")!.phone, "new");
-  assert.deepEqual(s.entity(hospital, "patient", "PAT-456")!.allergies, [
-    "Late allergy",
-  ]);
+  assert.equal((await s.entity(hospital, "patient", "PAT-456"))!.phone, "new");
+  assert.deepEqual(
+    (await s.entity(hospital, "patient", "PAT-456"))!.allergies,
+    ["Late allergy"],
+  );
   const move = {
     ...base,
     messageId: "move",
@@ -57,8 +58,8 @@ test("out-of-order independent fields converge and missing visit dependencies re
       changedAt: "2026-01-17T00:00:00Z",
     },
   };
-  assert.equal(consume(s, hospital, move).status, "WAITING");
-  consume(s, hospital, {
+  assert.equal((await consume(s, hospital, move)).status, "WAITING");
+  await consume(s, hospital, {
     ...base,
     messageId: "admit",
     eventType: "VISIT_ADMISSION",
@@ -67,13 +68,13 @@ test("out-of-order independent fields converge and missing visit dependencies re
       visit: { ...base.payload.visit, id: "LATE" },
     },
   });
-  assert.equal(s.entity(hospital, "visit", "LATE")!.room, "900");
-  s.close();
+  assert.equal((await s.entity(hospital, "visit", "LATE"))!.room, "900");
+  await s.close();
 });
-test("unassignment tombstone survives late assignment and discharge is retained", () => {
-  const s = setup();
+test("unassignment tombstone survives late assignment and discharge is retained", async () => {
+  const s = await setup();
   const base = sampleEvent();
-  consume(s, hospital, {
+  await consume(s, hospital, {
     ...base,
     messageId: "unassign",
     timestamp: "2026-01-17T00:00:00Z",
@@ -86,13 +87,13 @@ test("unassignment tombstone survives late assignment and discharge is retained"
       unassignedAt: "2026-01-17T00:00:00Z",
     },
   });
-  consume(s, hospital, {
+  await consume(s, hospital, {
     ...base,
     messageId: "late-assign",
     payload: { ...base.payload, assignmentId: "NEW" },
   });
-  assert.equal(s.entity(hospital, "assignment", "NEW")!.active, false);
-  consume(s, hospital, {
+  assert.equal((await s.entity(hospital, "assignment", "NEW"))!.active, false);
+  await consume(s, hospital, {
     ...base,
     messageId: "discharge",
     timestamp: "2026-01-18T00:00:00Z",
@@ -104,11 +105,14 @@ test("unassignment tombstone survives late assignment and discharge is retained"
       dischargeStatus: "HOME",
     },
   });
-  assert.equal(s.entity(hospital, "visit", "VISIT-001")!.status, "DISCHARGED");
-  s.close();
+  assert.equal(
+    (await s.entity(hospital, "visit", "VISIT-001"))!.status,
+    "DISCHARGED",
+  );
+  await s.close();
 });
-test("invalid schemas and links quarantine without partial writes", () => {
-  const s = setup();
+test("invalid schemas and links quarantine without partial writes", async () => {
+  const s = await setup();
   const base = sampleEvent();
   for (const event of [
     { ...base, messageId: "version", version: "2.0" },
@@ -123,19 +127,25 @@ test("invalid schemas and links quarantine without partial writes", () => {
       },
     },
   ])
-    assert.equal(consume(s, hospital, event).status, "QUARANTINED");
-  assert.equal(s.entity(hospital, "patient", "WRONG"), undefined);
-  s.close();
+    assert.equal((await consume(s, hospital, event)).status, "QUARANTINED");
+  assert.equal(await s.entity(hospital, "patient", "WRONG"), undefined);
+  await s.close();
 });
-test("transaction failure rolls back inbox, projection, and audit for safe redelivery", () => {
-  const s = setup();
+test("transaction failure rolls back inbox, projection, and audit for safe redelivery", async () => {
+  const s = await setup();
   const event = { ...sampleEvent(), messageId: "rollback" };
-  s.db.exec(
-    "CREATE TRIGGER fail_audit BEFORE INSERT ON audit BEGIN SELECT RAISE(ABORT,'injected'); END;",
+  await s.exec(
+    "CREATE TRIGGER fail_audit BEFORE INSERT ON audit FOR EACH ROW SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT='injected'",
   );
-  assert.throws(() => consume(s, hospital, event), /injected/);
-  assert.equal(s.get("SELECT id FROM inbox WHERE id=?", "rollback"), undefined);
-  s.db.exec("DROP TRIGGER fail_audit");
-  assert.equal(consume(s, hospital, event).status, "APPLIED");
-  s.close();
+  await assert.rejects(
+    async () => await consume(s, hospital, event),
+    /injected/,
+  );
+  assert.equal(
+    await s.get("SELECT id FROM patient_inbox WHERE id=?", "rollback"),
+    undefined,
+  );
+  await s.exec("DROP TRIGGER fail_audit");
+  assert.equal((await consume(s, hospital, event)).status, "APPLIED");
+  await s.close();
 });

@@ -16,11 +16,15 @@ import { PatientService } from "./patient.service.js";
 @Controller()
 export class PatientController {
   constructor(
-    @Inject(PatientService) private readonly service: PatientService,
+    @Inject(PatientService)
+    private readonly service: PatientService,
   ) {}
   @Get("v1/patients")
   @HttpCode(200)
-  async list(@Req() req: Request) {
+  async list(
+    @Req()
+    req: Request,
+  ) {
     const p = principal(req);
     const q = z
       .object({
@@ -28,32 +32,52 @@ export class PatientController {
         limit: z.coerce.number().int().min(1).max(100).default(50),
       })
       .parse(req.query);
-    return this.service.list(p, q);
+    return await this.service.list(p, q);
   }
   @Get("v1/visits/:id")
   @HttpCode(200)
-  async visit(@Req() req: Request) {
+  async visit(
+    @Req()
+    req: Request,
+  ) {
     const p = principal(req);
-    const identifier = id.parse((req.params as { id: string }).id);
-    return this.service.visit(p, identifier);
+    const identifier = id.parse(
+      (
+        req.params as {
+          id: string;
+        }
+      ).id,
+    );
+    return await this.service.visit(p, identifier);
   }
   @Internal()
   @Post("internal/v1/encounters/resolve")
   @HttpCode(200)
-  async resolveEncounter(@Req() req: Request) {
+  async resolveEncounter(
+    @Req()
+    req: Request,
+  ) {
     const input = encounterRequest.parse(req.body);
-    return this.service.resolveEncounter(input);
+    return await this.service.resolveEncounter(input);
   }
   @Post("v1/integrations/patient-events")
   @HttpCode(200)
-  async consume(@Req() req: Request, @Res() reply: Response) {
+  async consume(
+    @Req()
+    req: Request,
+    @Res()
+    reply: Response,
+  ) {
     const p = principal(req, ["integration"]);
-    const result = this.service.consume(p.hospital, req.body);
+    const result = await this.service.consume(p.hospital, req.body);
     return reply.status(result.status === "APPLIED" ? 200 : 202).send(result);
   }
   @Get("v1/admin/inbox")
   @HttpCode(200)
-  async inbox(@Req() req: Request) {
+  async inbox(
+    @Req()
+    req: Request,
+  ) {
     const p = principal(req, ["admin"]);
     const q = z
       .object({
@@ -61,16 +85,22 @@ export class PatientController {
         limit: z.coerce.number().int().min(1).max(100).default(50),
       })
       .parse(req.query);
-    return this.service.inbox(p, q);
+    return await this.service.inbox(p, q);
   }
   @Post("v1/admin/inbox/replay")
   @HttpCode(200)
-  async replay(@Req() req: Request) {
-    return this.service.replay(principal(req, ["admin"]).hospital);
+  async replay(
+    @Req()
+    req: Request,
+  ) {
+    return await this.service.replay(principal(req, ["admin"]).hospital);
   }
   @Get("v1/admin/metrics")
   @HttpCode(200)
-  async metrics(@Req() req: Request) {
-    return this.service.metrics(principal(req, ["admin"]).hospital);
+  async metrics(
+    @Req()
+    req: Request,
+  ) {
+    return await this.service.metrics(principal(req, ["admin"]).hospital);
   }
 }

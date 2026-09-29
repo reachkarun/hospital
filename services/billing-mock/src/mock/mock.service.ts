@@ -5,41 +5,37 @@ import { digest } from "@rounding/contracts";
 import { requestSchema, modeSchema } from "./mock.schemas.js";
 @Injectable()
 export class MockService {
-  constructor(private readonly store: Store) {
-    store.db
-      .exec(`CREATE TABLE IF NOT EXISTS mock_results(hospital TEXT,id TEXT,client_key TEXT,digest TEXT,response TEXT,created_at INTEGER,
-    PRIMARY KEY(hospital,id),UNIQUE(hospital,client_key));
-    CREATE TABLE IF NOT EXISTS mock_modes(hospital TEXT PRIMARY KEY,mode TEXT NOT NULL,remaining INTEGER NOT NULL);`);
-  }
-  setMode(p: z.infer<typeof modeSchema>) {
-    this.store.run(
-      "INSERT INTO mock_modes VALUES (?,?,?) ON CONFLICT(hospital) DO UPDATE SET mode=excluded.mode,remaining=excluded.remaining",
+  constructor(private readonly store: Store) {}
+  async setMode(p: z.infer<typeof modeSchema>) {
+    await this.store.run(
+      "INSERT INTO mock_modes VALUES (?,?,?) AS incoming ON DUPLICATE KEY UPDATE mode=incoming.mode,remaining=incoming.remaining",
       p.hospitalId,
       p.mode,
       p.remaining,
     );
     return p;
   }
-  submit(p: z.infer<typeof requestSchema>) {
+  async submit(p: z.infer<typeof requestSchema>) {
     const { store } = this;
-    const result = store.transaction(() => {
+    const result = await store.transaction(async () => {
+      await store.lockHospital(p.hospitalId);
       const hash = digest(p);
-      const old = store.get(
+      const old = await store.get(
         "SELECT * FROM mock_results WHERE hospital=? AND client_key=?",
         p.hospitalId,
         p.clientSubmissionId,
       );
-      if (old && Date.now() - old.created_at < 86_400_000)
+      if (old && Date.now() - old.created_at < 86400000)
         return old.digest === hash
           ? { code: 200, body: JSON.parse(old.response) }
           : { code: 409, body: { error: "KEY_REUSED" } };
-      const mode = store.get(
+      const mode = await store.get(
         "SELECT * FROM mock_modes WHERE hospital=?",
         p.hospitalId,
       );
       const active = mode && mode.remaining > 0;
       if (active)
-        store.run(
+        await store.run(
           "UPDATE mock_modes SET remaining=remaining-1 WHERE hospital=?",
           p.hospitalId,
         );
@@ -80,13 +76,13 @@ export class MockService {
       };
       // Durable receipt survives mock restarts. Expired keys are not promised deduplication.
       if (old)
-        store.run(
+        await store.run(
           "DELETE FROM mock_results WHERE hospital=? AND client_key=?",
           p.hospitalId,
           p.clientSubmissionId,
         );
-      store.run(
-        "INSERT INTO mock_results VALUES (?,?,?,?,?,?) ON CONFLICT(hospital,id) DO UPDATE SET response=excluded.response,created_at=excluded.created_at",
+      await store.run(
+        "INSERT INTO mock_results VALUES (?,?,?,?,?,?) AS incoming ON DUPLICATE KEY UPDATE response=incoming.response,created_at=incoming.created_at",
         p.hospitalId,
         p.submissionId,
         p.clientSubmissionId,
@@ -100,8 +96,8 @@ export class MockService {
     });
     return result;
   }
-  get(hospital: string, identifier: string) {
-    const row = this.store.get(
+  async get(hospital: string, identifier: string) {
+    const row = await this.store.get(
       "SELECT response FROM mock_results WHERE hospital=? AND id=?",
       hospital,
       identifier,

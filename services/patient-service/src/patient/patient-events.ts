@@ -9,7 +9,6 @@ import {
   day,
   type Event,
 } from "@rounding/contracts";
-
 const clinical = z
   .array(z.union([z.string().max(500), z.record(z.unknown())]))
   .max(200);
@@ -85,26 +84,24 @@ const payloads: Record<string, z.ZodTypeAny> = {
     providerId: id.optional(),
   }),
 };
-
 class Waiting extends Error {}
 class Invalid extends Error {}
-
 /** Field clocks preserve independent updates delivered out of order. */
-function merge(
+async function merge(
   store: Store,
   e: Event,
   kind: string,
   identifier: string,
   patch: Json,
 ) {
-  const body = store.entity(e.hospitalId, kind, identifier) ?? {
+  const body = (await store.entity(e.hospitalId, kind, identifier)) ?? {
     id: identifier,
   };
   const stamp = `${new Date(e.timestamp).toISOString()}|${e.messageId}`;
   for (const [field, value] of Object.entries(patch)) {
     if (field === "id" || value === undefined) continue;
-    const clock = store.get(
-      "SELECT stamp FROM field_clocks WHERE hospital=? AND kind=? AND entity_id=? AND field=?",
+    const clock = await store.get(
+      "SELECT stamp FROM patient_field_clocks WHERE hospital=? AND kind=? AND entity_id=? AND field=?",
       e.hospitalId,
       kind,
       identifier,
@@ -112,8 +109,8 @@ function merge(
     );
     if (!clock || clock.stamp < stamp) {
       body[field] = value;
-      store.run(
-        "INSERT INTO field_clocks VALUES (?,?,?,?,?) ON CONFLICT(hospital,kind,entity_id,field) DO UPDATE SET stamp=excluded.stamp",
+      await store.run(
+        "INSERT INTO patient_field_clocks VALUES (?,?,?,?,?) AS incoming ON DUPLICATE KEY UPDATE stamp=incoming.stamp",
         e.hospitalId,
         kind,
         identifier,
@@ -122,27 +119,25 @@ function merge(
       );
     }
   }
-  store.run(
-    "INSERT INTO entities VALUES (?,?,?,?) ON CONFLICT(hospital,kind,id) DO UPDATE SET body=excluded.body",
+  await store.run(
+    "INSERT INTO patient_entities VALUES (?,?,?,?) AS incoming ON DUPLICATE KEY UPDATE body=incoming.body",
     e.hospitalId,
     kind,
     identifier,
     JSON.stringify(body),
   );
 }
-
-function requireEntity(
+async function requireEntity(
   store: Store,
   e: Event,
   kind: string,
   identifier: string,
 ) {
-  const result = store.entity(e.hospitalId, kind, identifier);
+  const result = await store.entity(e.hospitalId, kind, identifier);
   if (!result) throw new Waiting("MISSING_DEPENDENCY");
   return result;
 }
-
-function apply(store: Store, e: Event) {
+async function apply(store: Store, e: Event) {
   if (e.version !== "1.0" || !payloads[e.eventType])
     throw new Invalid("UNSUPPORTED_SCHEMA");
   const parsed = payloads[e.eventType]!.safeParse(e.payload);
@@ -152,11 +147,15 @@ function apply(store: Store, e: Event) {
     e.eventType === "PATIENT_ASSIGNMENT" ||
     e.eventType === "VISIT_ADMISSION"
   ) {
-    const oldVisit = store.entity(e.hospitalId, "visit", p.visit.id);
+    const oldVisit = await store.entity(e.hospitalId, "visit", p.visit.id);
     if (oldVisit && oldVisit.patientId !== p.patient.id)
       throw new Invalid("VISIT_PATIENT_MISMATCH");
     if (p.assignmentId) {
-      const old = store.entity(e.hospitalId, "assignment", p.assignmentId);
+      const old = await store.entity(
+        e.hospitalId,
+        "assignment",
+        p.assignmentId,
+      );
       if (
         old &&
         (old.patientId !== p.patient.id ||
@@ -165,14 +164,14 @@ function apply(store: Store, e: Event) {
       )
         throw new Invalid("ASSIGNMENT_ID_REUSED");
     }
-    merge(store, e, "patient", p.patient.id, p.patient);
-    merge(store, e, "visit", p.visit.id, {
+    await merge(store, e, "patient", p.patient.id, p.patient);
+    await merge(store, e, "visit", p.visit.id, {
       ...p.visit,
       patientId: p.patient.id,
     });
     if (p.provider) {
-      merge(store, e, "provider", p.provider.id, p.provider);
-      merge(store, e, "assignment", p.assignmentId, {
+      await merge(store, e, "provider", p.provider.id, p.provider);
+      await merge(store, e, "assignment", p.assignmentId, {
         patientId: p.patient.id,
         providerId: p.provider.id,
         visitId: p.visit.id,
@@ -181,7 +180,7 @@ function apply(store: Store, e: Event) {
       });
     }
   } else if (e.eventType === "PATIENT_UPDATE") {
-    requireEntity(store, e, "patient", p.patientId);
+    await requireEntity(store, e, "patient", p.patientId);
     const changes = Object.fromEntries(
       Object.entries(p.changes).map(([k, v]) => [k, (v as Json).new]),
     );
@@ -192,10 +191,10 @@ function apply(store: Store, e: Event) {
       .safeParse(changes);
     if (!patch.success || Object.keys(changes).length === 0)
       throw new Invalid("INVALID_PATIENT_CHANGES");
-    merge(store, e, "patient", p.patientId, patch.data);
+    await merge(store, e, "patient", p.patientId, patch.data);
   } else if (e.eventType === "PATIENT_UNASSIGNMENT") {
     // Tombstones can arrive before assignments; later replay cannot reactivate them.
-    const old = store.entity(e.hospitalId, "assignment", p.assignmentId);
+    const old = await store.entity(e.hospitalId, "assignment", p.assignmentId);
     if (
       old &&
       (old.patientId !== p.patientId ||
@@ -203,7 +202,7 @@ function apply(store: Store, e: Event) {
         old.visitId !== p.visitId)
     )
       throw new Invalid("ASSIGNMENT_ID_REUSED");
-    merge(store, e, "assignment", p.assignmentId, {
+    await merge(store, e, "assignment", p.assignmentId, {
       patientId: p.patientId,
       providerId: p.providerId,
       visitId: p.visitId,
@@ -211,15 +210,15 @@ function apply(store: Store, e: Event) {
       unassignedAt: p.unassignedAt,
     });
   } else {
-    const current = requireEntity(store, e, "visit", p.visitId);
+    const current = await requireEntity(store, e, "visit", p.visitId);
     if (current.patientId !== p.patientId)
       throw new Invalid("VISIT_PATIENT_MISMATCH");
     if (e.eventType === "VISIT_LOCATION_CHANGE")
-      merge(store, e, "visit", p.visitId, p.newLocation);
+      await merge(store, e, "visit", p.visitId, p.newLocation);
     else {
       if (Date.parse(p.dischargeDate) < Date.parse(current.admissionDate))
         throw new Invalid("DISCHARGE_BEFORE_ADMISSION");
-      merge(store, e, "visit", p.visitId, {
+      await merge(store, e, "visit", p.visitId, {
         status: "DISCHARGED",
         dischargeDate: p.dischargeDate,
         dischargeStatus: p.dischargeStatus,
@@ -228,28 +227,28 @@ function apply(store: Store, e: Event) {
     }
   }
 }
-
-function processStored(store: Store, e: Event) {
+async function processStored(store: Store, e: Event) {
   let status = "APPLIED";
   let error: string | null = null;
-  store.db.exec("SAVEPOINT event_apply");
+  await store.exec("SAVEPOINT event_apply");
   try {
-    apply(store, e);
-    store.db.exec("RELEASE event_apply");
+    await apply(store, e);
+    await store.exec("RELEASE SAVEPOINT event_apply");
   } catch (err) {
-    store.db.exec("ROLLBACK TO event_apply; RELEASE event_apply");
+    await store.exec("ROLLBACK TO SAVEPOINT event_apply");
+    await store.exec("RELEASE SAVEPOINT event_apply");
     if (!(err instanceof Waiting || err instanceof Invalid)) throw err;
     status = err instanceof Waiting ? "WAITING" : "QUARANTINED";
     error = err.message;
   }
-  store.run(
-    "UPDATE inbox SET status=?,error=? WHERE hospital=? AND id=?",
+  await store.run(
+    "UPDATE patient_inbox SET status=?,error=? WHERE hospital=? AND id=?",
     status,
     error,
     e.hospitalId,
     e.messageId,
   );
-  store.audit(
+  await store.audit(
     e.hospitalId,
     `broker:${e.source}`,
     `PATIENT_EVENT_${status}`,
@@ -257,20 +256,20 @@ function processStored(store: Store, e: Event) {
   );
   return { messageId: e.messageId, status, error };
 }
-
-export function consume(store: Store, hospital: string, input: unknown) {
+export async function consume(store: Store, hospital: string, input: unknown) {
   const e = envelope.parse(input);
   check(e.hospitalId === hospital, 403, "HOSPITAL_MISMATCH");
-  return store.transaction(() => {
+  return await store.transaction(async () => {
+    await store.lockHospital(hospital);
     const hash = digest(e);
-    const old = store.get(
-      "SELECT * FROM inbox WHERE hospital=? AND id=?",
+    const old = await store.get(
+      "SELECT * FROM patient_inbox WHERE hospital=? AND id=?",
       hospital,
       e.messageId,
     );
     if (old) {
       check(old.digest === hash, 409, "MESSAGE_ID_REUSED");
-      store.audit(
+      await store.audit(
         hospital,
         `broker:${e.source}`,
         "PATIENT_EVENT_DUPLICATE",
@@ -283,8 +282,8 @@ export function consume(store: Store, hospital: string, input: unknown) {
         duplicate: true,
       };
     }
-    store.run(
-      "INSERT INTO inbox(hospital,id,digest,body,status,received_at) VALUES (?,?,?,?,?,?)",
+    await store.run(
+      "INSERT INTO patient_inbox(hospital,id,digest,body,status,received_at) VALUES (?,?,?,?,?,?)",
       hospital,
       e.messageId,
       hash,
@@ -292,40 +291,44 @@ export function consume(store: Store, hospital: string, input: unknown) {
       "RECEIVED",
       new Date().toISOString(),
     );
-    const result = processStored(store, e);
+    const result = await processStored(store, e);
     // Bounded dependency replay after upstream entities become available.
     if (result.status === "APPLIED")
-      replayWaitingInTransaction(store, hospital);
+      await replayWaitingInTransaction(store, hospital);
     return { ...result, duplicate: false };
   });
 }
-
-function replayWaitingInTransaction(store: Store, hospital: string) {
-  const rows = store.all(
-    "SELECT body FROM inbox WHERE hospital=? AND status='WAITING' ORDER BY json_extract(body,'$.timestamp'),id LIMIT 100",
+async function replayWaitingInTransaction(store: Store, hospital: string) {
+  const rows = await store.all(
+    "SELECT body FROM patient_inbox WHERE hospital=? AND status='WAITING' ORDER BY JSON_UNQUOTE(JSON_EXTRACT(body,'$.timestamp')),id LIMIT 100",
     hospital,
   );
-  return rows.map((row) => processStored(store, JSON.parse(row.body)));
+  const results = [];
+  for (const row of rows)
+    results.push(await processStored(store, JSON.parse(row.body)));
+  return results;
 }
-
-export function replayWaiting(store: Store, hospital: string) {
-  return store.transaction(() => replayWaitingInTransaction(store, hospital));
+export async function replayWaiting(store: Store, hospital: string) {
+  return await store.transaction(async () => {
+    await store.lockHospital(hospital);
+    return await replayWaitingInTransaction(store, hospital);
+  });
 }
-
-export function assigned(
+export async function assigned(
   store: Store,
   hospital: string,
   providerId: string,
   visitId: string,
   includeHistorical = false,
 ) {
-  return store
-    .all(
-      "SELECT body FROM entities WHERE hospital=? AND kind='assignment' AND json_extract(body,'$.providerId')=? AND json_extract(body,'$.visitId')=?",
+  return (
+    await store.all(
+      "SELECT body FROM patient_entities WHERE hospital=? AND kind='assignment' AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.providerId'))=? AND JSON_UNQUOTE(JSON_EXTRACT(body,'$.visitId'))=?",
       hospital,
       providerId,
       visitId,
     )
+  )
     .map((row) => JSON.parse(row.body))
     .some((a) => a.active || (includeHistorical && a.assignedAt));
 }

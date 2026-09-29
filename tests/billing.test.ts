@@ -1,4 +1,4 @@
-import { test } from "node:test";
+import { test, testDatabaseConfig, seed, seedHospitals } from "./database.js";
 import assert from "node:assert/strict";
 import { Store } from "../services/billing-service/src/store.js";
 import {
@@ -6,9 +6,7 @@ import {
   type BillingTransport,
 } from "../services/billing-service/src/worker.js";
 import { receiveJob } from "../services/billing-service/src/billing/billing-jobs.js";
-import { seedHospitals } from "@rounding/platform/runtime";
 import type { Json } from "@rounding/platform/db";
-
 export function payload(id = "job-one") {
   return {
     submissionId: id,
@@ -32,10 +30,10 @@ export function payload(id = "job-one") {
     ],
   };
 }
-function setup() {
-  const s = new Store();
-  seedHospitals(s, "http://external/api/v1");
-  receiveJob(s, payload());
+async function setup() {
+  const s = new Store(testDatabaseConfig());
+  await seedHospitals(s, "http://external/api/v1");
+  await receiveJob(s, payload());
   return s;
 }
 function ack(p: Json) {
@@ -59,27 +57,26 @@ function transport(
     ...overrides,
   };
 }
-
-test("billing service owns only delivery state, and durable job IDs reject changed payloads", () => {
-  const s = setup();
-  assert.equal(receiveJob(s, payload()).submissionId, "job-one");
-  assert.throws(
-    () => receiveJob(s, { ...payload(), patientMrn: "changed" }),
+test("billing service owns only delivery state, and durable job IDs reject changed payloads", async () => {
+  const s = await setup();
+  assert.equal((await receiveJob(s, payload())).submissionId, "job-one");
+  await assert.rejects(
+    async () => await receiveJob(s, { ...payload(), patientMrn: "changed" }),
     /BILLING_JOB_ID_REUSED/,
   );
   assert.equal(
-    s.get("SELECT name FROM sqlite_master WHERE name='charges'"),
+    await s.get("SELECT id FROM charge_submissions LIMIT 1"),
     undefined,
   );
   assert.equal(
-    s.get("SELECT name FROM sqlite_master WHERE name='entities'"),
+    await s.get("SELECT id FROM patient_entities LIMIT 1"),
     undefined,
   );
-  s.close();
+  await s.close();
 });
 test("billing outage retries with exponential backoff", async () => {
-  const s = setup();
-  let time = 100_000;
+  const s = await setup();
+  let time = 100000;
   let count = 0;
   const worker = new BillingWorker(
     s,
@@ -93,16 +90,22 @@ test("billing outage retries with exponential backoff", async () => {
     () => 0,
   );
   await worker.tick();
-  assert.equal(s.get("SELECT status FROM submissions")!.status, "RETRY");
+  assert.equal(
+    (await s.get("SELECT status FROM billing_submissions"))!.status,
+    "RETRY",
+  );
   assert.equal(await worker.tick(), false);
   time += 1000;
   await worker.tick();
-  assert.equal(s.get("SELECT status FROM submissions")!.status, "ACCEPTED");
-  s.close();
+  assert.equal(
+    (await s.get("SELECT status FROM billing_submissions"))!.status,
+    "ACCEPTED",
+  );
+  await s.close();
 });
 test("lost external acknowledgment reconciles without another POST", async () => {
-  const s = setup();
-  let time = 100_000;
+  const s = await setup();
+  let time = 100000;
   let count = 0;
   let receipt: Json = {};
   const worker = new BillingWorker(
@@ -122,12 +125,15 @@ test("lost external acknowledgment reconciles without another POST", async () =>
   time += 1000;
   await worker.tick();
   assert.equal(count, 1);
-  assert.equal(s.get("SELECT status FROM submissions")!.status, "ACCEPTED");
-  s.close();
+  assert.equal(
+    (await s.get("SELECT status FROM billing_submissions"))!.status,
+    "ACCEPTED",
+  );
+  await s.close();
 });
 test("24-hour idempotency expiry never permits blind resubmission", async () => {
-  const s = setup();
-  let time = 100_000;
+  const s = await setup();
+  let time = 100000;
   let count = 0;
   const worker = new BillingWorker(
     s,
@@ -145,14 +151,14 @@ test("24-hour idempotency expiry never permits blind resubmission", async () => 
   await worker.tick();
   assert.equal(count, 1);
   assert.equal(
-    s.get("SELECT status,error FROM submissions")!.error,
+    (await s.get("SELECT status,error FROM billing_submissions"))!.error,
     "IDEMPOTENCY_WINDOW_EXPIRED",
   );
-  s.close();
+  await s.close();
 });
 test("summary-only lookup repeats the identical request inside the safe window", async () => {
-  const s = setup();
-  let time = 100_000;
+  const s = await setup();
+  let time = 100000;
   const requests: Json[] = [];
   const worker = new BillingWorker(
     s,
@@ -174,31 +180,35 @@ test("summary-only lookup repeats the identical request inside the safe window",
   time += 1000;
   await worker.tick();
   assert.deepEqual(requests[0], requests[1]);
-  s.close();
+  await s.close();
 });
 test("Retry-After, permanent validation failure, and malformed acknowledgments are handled", async () => {
-  const s = setup();
-  let time = 100_000;
+  const s = await setup();
+  let time = 100000;
   let count = 0;
   const worker = new BillingWorker(
     s,
     transport({
       submit: async () =>
         ++count === 1
-          ? { status: 429, body: {}, retryAfter: 60_000 }
+          ? { status: 429, body: {}, retryAfter: 60000 }
           : { status: 400, body: {} },
     }),
     () => time,
     () => 0,
   );
   await worker.tick();
-  time += 30_000;
+  time += 30000;
   assert.equal(await worker.tick(), false);
-  time += 30_000;
+  time += 30000;
   await worker.tick();
-  assert.equal(s.get("SELECT status FROM submissions")!.status, "FAILED");
-  s.close();
-  const bad = setup();
+  assert.equal(
+    (await s.get("SELECT status FROM billing_submissions"))!.status,
+    "FAILED",
+  );
+  await s.run("DELETE FROM billing_submissions");
+  await s.close();
+  const bad = await setup();
   await new BillingWorker(
     bad,
     transport({
@@ -208,20 +218,28 @@ test("Retry-After, permanent validation failure, and malformed acknowledgments a
       }),
     }),
   ).tick();
-  assert.equal(bad.get("SELECT status FROM submissions")!.status, "RETRY");
-  bad.close();
+  assert.equal(
+    (await bad.get("SELECT status FROM billing_submissions"))!.status,
+    "RETRY",
+  );
+  await bad.close();
 });
 test("competing worker leases fence an obsolete response", async () => {
-  const s = setup();
-  let time = 100_000;
+  const s = await setup();
+  let time = 100000;
   let release!: () => void;
   const gate = new Promise<void>((r) => {
     release = r;
+  });
+  let started!: () => void;
+  const startedPromise = new Promise<void>((resolve) => {
+    started = resolve;
   });
   const slow = new BillingWorker(
     s,
     transport({
       submit: async (_u, _h, p) => {
+        started!();
         await gate;
         return { status: 200, body: ack(p) };
       },
@@ -229,22 +247,26 @@ test("competing worker leases fence an obsolete response", async () => {
     () => time,
   );
   const first = slow.tick();
+  await startedPromise;
   const other = new BillingWorker(
     s,
     transport({ submit: async () => ({ status: 400, body: {} }) }),
     () => time,
   );
   assert.equal(await other.tick(), false);
-  time += 60_001;
+  time += 60001;
   await other.tick();
   release();
   await first;
-  assert.equal(s.get("SELECT status FROM submissions")!.status, "FAILED");
-  s.close();
+  assert.equal(
+    (await s.get("SELECT status FROM billing_submissions"))!.status,
+    "FAILED",
+  );
+  await s.close();
 });
 test("retry ceiling parks work for review", async () => {
-  const s = setup();
-  let time = 100_000;
+  const s = await setup();
+  let time = 100000;
   const worker = new BillingWorker(
     s,
     transport({ submit: async () => ({ status: 503, body: {} }) }),
@@ -253,9 +275,12 @@ test("retry ceiling parks work for review", async () => {
   );
   for (let n = 0; n < 10; n++) {
     await worker.tick();
-    time += 60_000;
+    time += 60000;
   }
-  assert.equal(s.get("SELECT status FROM submissions")!.status, "REVIEW");
+  assert.equal(
+    (await s.get("SELECT status FROM billing_submissions"))!.status,
+    "REVIEW",
+  );
   assert.equal(await worker.tick(), false);
-  s.close();
+  await s.close();
 });

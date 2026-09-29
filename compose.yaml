@@ -1,14 +1,48 @@
 x-environment: &environment
-  DEMO_MODE: "true"
+  DEMO_MODE: ${DEMO_MODE:-true}
   HOST: 0.0.0.0
-  BILLING_URL: http://billing-mock:4001/api/v1
-  BILLING_TOKEN: demo-billing-secret
+  AUTH_TOKENS: ${AUTH_TOKENS:-}
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DB_NAME: ${DB_NAME:-rounding_app}
+  DB_USER: ${DB_USER:-rounding_app}
+  DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
+  DB_POOL_SIZE: ${DB_POOL_SIZE:-10}
+  BILLING_TOKEN: ${BILLING_TOKEN:-demo-billing-secret}
+  PATIENT_SERVICE_TOKEN: ${PATIENT_SERVICE_TOKEN:-demo-patient-service-secret}
+  BILLING_SERVICE_TOKEN: ${BILLING_SERVICE_TOKEN:-demo-billing-service-secret}
   PATIENT_SERVICE_URL: http://patient-service:3101
   CHARGE_SERVICE_URL: http://charge-service:3102
   BILLING_SERVICE_URL: http://billing-service:3103
 
+x-app: &app
+  environment: *environment
+  restart: unless-stopped
+  depends_on:
+    mysql:
+      condition: service_healthy
+
 services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+    ports:
+      - "127.0.0.1:${DB_PORT:-3306}:3306"
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "MYSQL_PWD=$$MYSQL_ROOT_PASSWORD mysqladmin ping -h127.0.0.1 -uroot --silent",
+        ]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+    restart: unless-stopped
   gateway:
+    <<: *app
     build:
       context: .
       dockerfile: services/gateway/Dockerfile
@@ -28,18 +62,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    restart: unless-stopped
   patient-service:
+    <<: *app
     build:
       context: .
       dockerfile: services/patient-service/Dockerfile
     environment:
       <<: *environment
       PORT: 3101
-      PATIENT_SERVICE_TOKEN: demo-patient-service-secret
-      DATABASE_PATH: /app/data/patients.db
-    volumes:
-      - patient-data:/app/data
     healthcheck:
       test:
         [
@@ -51,19 +81,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    restart: unless-stopped
   charge-service:
+    <<: *app
     build:
       context: .
       dockerfile: services/charge-service/Dockerfile
     environment:
       <<: *environment
       PORT: 3102
-      PATIENT_SERVICE_TOKEN: demo-patient-service-secret
-      BILLING_SERVICE_TOKEN: demo-billing-service-secret
-      DATABASE_PATH: /app/data/charges.db
-    volumes:
-      - charge-data:/app/data
     healthcheck:
       test:
         [
@@ -75,18 +100,14 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    restart: unless-stopped
   billing-service:
+    <<: *app
     build:
       context: .
       dockerfile: services/billing-service/Dockerfile
     environment:
       <<: *environment
       PORT: 3103
-      BILLING_SERVICE_TOKEN: demo-billing-service-secret
-      DATABASE_PATH: /app/data/billing.db
-    volumes:
-      - billing-service-data:/app/data
     healthcheck:
       test:
         [
@@ -98,19 +119,16 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    restart: unless-stopped
   billing-mock:
+    <<: *app
     build:
       context: .
       dockerfile: services/billing-mock/Dockerfile
     environment:
       <<: *environment
       PORT: 4001
-      DATABASE_PATH: /app/data/billing.db
     ports:
       - "127.0.0.1:4001:4001"
-    volumes:
-      - billing-data:/app/data
     healthcheck:
       test:
         [
@@ -122,9 +140,5 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
-    restart: unless-stopped
 volumes:
-  patient-data:
-  charge-data:
-  billing-service-data:
-  billing-data:
+  mysql-data:

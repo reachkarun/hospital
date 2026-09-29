@@ -5,7 +5,6 @@ import {
   type OnApplicationShutdown,
 } from "@nestjs/common";
 import type { Database } from "./db.js";
-
 /** Nest drains background IO before closing HTTP, then releases storage after HTTP closes. */
 @Injectable()
 export class ApplicationLifecycle
@@ -15,11 +14,9 @@ export class ApplicationLifecycle
   private readonly tasks: Promise<void>[] = [];
   private database?: Database;
   private readonly logger = new Logger(ApplicationLifecycle.name);
-
   ownDatabase(database: Database) {
     this.database = database;
   }
-
   start(tick: () => Promise<unknown>, delay: number) {
     const task = (async () => {
       while (!this.stopping) {
@@ -34,14 +31,12 @@ export class ApplicationLifecycle
     })();
     this.tasks.push(task);
   }
-
   async onModuleDestroy() {
     this.stopping = true;
     await Promise.all(this.tasks);
   }
-
-  onApplicationShutdown() {
-    this.database?.close();
+  async onApplicationShutdown() {
+    await this.database?.close();
     this.database = undefined;
   }
 }

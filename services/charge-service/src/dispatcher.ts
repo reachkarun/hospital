@@ -4,7 +4,6 @@ import { validateAck } from "@rounding/contracts/billing";
 import { jobState } from "@rounding/contracts/internal";
 import { internalJson } from "@rounding/platform/client";
 import { Store, type Json } from "./store.js";
-
 export interface BillingJobs {
   deliver(payload: Json): Promise<unknown>;
   retry(hospital: string, id: string, operationId: string): Promise<unknown>;
@@ -19,7 +18,6 @@ export const billingClient = (url: string, token: string): BillingJobs => ({
       { operationId },
     ),
 });
-
 /** Durable HTTP outbox + idempotent status projection. This service never calls external billing. */
 export class Dispatcher {
   constructor(
@@ -28,17 +26,17 @@ export class Dispatcher {
     private clock: () => number = Date.now,
   ) {}
   async tick() {
-    const row = this.store.transaction<Json | undefined>(() => {
-      const candidate = this.store.get(
-        "SELECT * FROM submissions WHERE status IN ('QUEUED','SENDING','RETRY') AND dispatch_at<=? AND dispatch_lease<=? ORDER BY dispatch_at,id LIMIT 1",
+    const row = await this.store.transaction<Json | undefined>(async () => {
+      const candidate = await this.store.get(
+        "SELECT * FROM charge_submissions WHERE status IN ('QUEUED','SENDING','RETRY') AND dispatch_at<=? AND dispatch_lease<=? ORDER BY dispatch_at,id LIMIT 1 FOR UPDATE SKIP LOCKED",
         this.clock(),
         this.clock(),
       );
       if (!candidate) return;
       const token = randomUUID();
-      this.store.run(
-        "UPDATE submissions SET dispatch_lease=?,dispatch_token=? WHERE hospital=? AND id=?",
-        this.clock() + 30_000,
+      await this.store.run(
+        "UPDATE charge_submissions SET dispatch_lease=?,dispatch_token=? WHERE hospital=? AND id=?",
+        this.clock() + 30000,
         token,
         candidate.hospital,
         candidate.id,
@@ -71,9 +69,9 @@ export class Dispatcher {
         502,
         "BILLING_STATE_INVALID",
       );
-      this.store.transaction(() => {
-        const current = this.store.get(
-          "SELECT * FROM submissions WHERE hospital=? AND id=?",
+      await this.store.transaction(async () => {
+        const current = await this.store.get(
+          "SELECT * FROM charge_submissions WHERE hospital=? AND id=? FOR UPDATE",
           row.hospital,
           row.id,
         );
@@ -85,8 +83,8 @@ export class Dispatcher {
           newerRetry && !terminalAck && remote.status !== "FAILED"
             ? "RETRY"
             : remote.status;
-        this.store.run(
-          "UPDATE submissions SET status=?,attempts=?,first_attempt=?,next_at=?,response=?,error=?,dispatch_at=?,dispatch_lease=0,dispatch_token=NULL,retry_request=? WHERE hospital=? AND id=?",
+        await this.store.run(
+          "UPDATE charge_submissions SET status=?,attempts=?,first_attempt=?,next_at=?,response=?,error=?,dispatch_at=?,dispatch_lease=0,dispatch_token=NULL,retry_request=? WHERE hospital=? AND id=?",
           nextStatus,
           remote.attempts,
           remote.firstAttempt,
@@ -100,7 +98,7 @@ export class Dispatcher {
         );
         if (terminalAck && ack)
           for (const item of [...ack.acceptedCharges, ...ack.rejectedCharges]) {
-            this.store.run(
+            await this.store.run(
               "UPDATE charges SET status=?,error=?,version=version+1 WHERE hospital=? AND id=? AND submission=? AND status='QUEUED'",
               item.status,
               item.error ? JSON.stringify(item.error) : null,
@@ -108,7 +106,7 @@ export class Dispatcher {
               item.chargeId,
               row.id,
             );
-            this.store.audit(
+            await this.store.audit(
               row.hospital,
               "billing-service",
               `CHARGE_${item.status}`,
@@ -116,7 +114,7 @@ export class Dispatcher {
             );
           }
         if (remote.status === "FAILED")
-          this.store.run(
+          await this.store.run(
             "UPDATE charges SET status='REJECTED',error=?,version=version+1 WHERE hospital=? AND submission=? AND status='QUEUED'",
             JSON.stringify({
               code: remote.error,
@@ -126,7 +124,7 @@ export class Dispatcher {
             row.id,
           );
         if (current.status !== nextStatus)
-          this.store.audit(
+          await this.store.audit(
             row.hospital,
             "billing-service",
             `SUBMISSION_${nextStatus}`,
@@ -135,8 +133,8 @@ export class Dispatcher {
       });
     } catch {
       // A lost PUT response is not a lost job. Send the same immutable ID on redelivery.
-      this.store.run(
-        "UPDATE submissions SET dispatch_at=?,dispatch_lease=0,dispatch_token=NULL WHERE hospital=? AND id=? AND dispatch_token=?",
+      await this.store.run(
+        "UPDATE charge_submissions SET dispatch_at=?,dispatch_lease=0,dispatch_token=NULL WHERE hospital=? AND id=? AND dispatch_token=?",
         this.clock() + 2000,
         row.hospital,
         row.id,
